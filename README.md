@@ -1,412 +1,696 @@
-# RAG Narrative Data Management Pipeline
-
-## Overview
-
-This project implements a Retrieval-Augmented Generation (RAG) pipeline that transforms a large corpus of raw narrative (lore) documents into a finely tuned, context-aware AI system. The pipeline consists of several key stages:
-
-- **Document Summarization:** Using the `facebook/bart-large-cnn` model to distill lengthy texts into concise summaries.
-- **Embedding & Indexing:** Generating dense vector embeddings with SentenceTransformer (`all-MiniLM-L6-v2`) for semantic search via FAISS, and indexing enriched data in Elasticsearch.
-- **QA Pair Generation:** Creating question-answer pairs using both a Hugging Face T5-based model (`valhalla/t5-base-qg-hl`) and OpenAI’s GPT-4/GPT-4o API.
-- **Tagging and Metadata Enrichment:** Enhancing the data with named entity recognition using `spaCy` (`en_core_web_trf`), topic modeling via BERTopic (`all-mpnet-base-v2`), and chronology inference.
-- **Fine-Tuning:** Using the curated QA dataset to fine-tune GPT-4 for highly context-aware responses.
-- **Future Enhancements:** Plans for dynamic ranking, function-calling for query routing, and extended scalability.
+# 📘 RAG Narrative Data Management Pipeline
 
 ---
 
-## Project Structure
+## 🧭 Overview
 
-The project is organized into several scripts, each responsible for a specific stage in the pipeline. Below is a brief overview of the main scripts and their roles:
+This project implements a highly structured **Retrieval-Augmented Generation (RAG)** pipeline, tailored for processing and enriching a vast corpus of narrative (lore) documents into a **context-aware, semantically indexed AI assistant**. The architecture reflects best practices in **data engineering, NLP pipeline design, and hybrid human-AI knowledge encoding**.
 
-- **Document Summarization:**
+---
+
+## 🚀 Executive Summary: Key Technologies and Impact
+
+- **GPT-4o Fine-Tuning & Multi-Agent RAG**: Fine-tuned GPT-4o on 981 curated QA pairs to act as a mid-tier reasoning module within a multi-agent Retrieval-Augmented Generation system.
+
+- **Semantic Search Stack**: Combined **FAISS vector indexing** (MiniLM) with **Elasticsearch** (NER, metadata, topic models via BERTopic) for hybrid search and dynamic document retrieval.
+
+- **Context-Aware Dialogue Memory**: Engineered a custom `GPTClient` class to manage long-form interaction, token-aware summarization, and recursive memory rotation across sessions.
+
+- **Full NLP Enrichment Pipeline**: Deployed **facebook/bart-large-cnn** (a BART-based abstractive summarizer), **spaCy NER**, **BERTopic**, and **keyword clustering** to produce semantically enriched, chronologically indexed lore summaries.
+
+- **Hands-On LLM Orchestration**: Used OpenAI’s API directly for both fine-tuning and runtime interaction. Incorporated structured prompt design, dynamic role conditioning, and functionally distinct GPT agents.
+
+> Built as a hybrid between **data engineering**, **information retrieval**, and **generative AI orchestration**—this pipeline showcases end-to-end model interaction with full traceability and introspection.
+
+---
+
+The following outlines the major phases and corresponding scripts involved in the RAG lifecycle
+
+- **📄 Document Summarization:** Splitting, parsing, and summarizing long-form narrative documents using `facebook/bart-large-cnn`.
+- **📚 Chronology Inference:** Inferring each document’s timeline position using filename regex and fallback mappings (`books_to_months_mapping.json`).
+- **🔍 Embedding & Indexing:** Encoding summaries with SentenceTransformers (`all-MiniLM-L6-v2`) for FAISS vector search and Elasticsearch indexing.
+- **❓ QA Pair Generation:** Auto-generating question-answer pairs via both Hugging Face (`valhalla/t5-base-qg-hl`) and OpenAI’s GPT-4/GPT-4o API.
+- **🏷️ Metadata Enrichment:** Extracting named entities (`spaCy`), inferring topics (`BERTopic`), and assigning themes from keyword clustering.
+- **👥 Role and Influence Modeling:** Inferring characters’ functional roles and narrative influence maps using heuristics and GPT-based semantic reasoning.
+- **🧪 Fine-Tuning:** Using curated QA data to fine-tune GPT-4 models for high-context narrative comprehension.
+- **🚧 Future Enhancements:** Embedding QA pairs, query routing via function-calling, dynamic re-ranking, and extended scaling across domains.
+
+---
+
+## 🗂️ Project Structure
+
+Each core stage of the pipeline is managed by modular Python scripts. These are organized by functional phase:
+
+- **Summarization:**
   - `summarize_documents_with_batch_processing.py`
   - `summarize_documents_with_batch_processing_only_modified_since_last_processing.py`
-- **Embedding & Indexing:**
+- **Indexing & Embedding:**
   - `load_documents_for_sentence_transformers.py`
 - **QA Pair Generation:**
-  - `generate_qa_pairs.py` (Hugging Face pipeline with `valhalla/t5-base-qg-hl`)
-  - `generate_qa_pairs_via_GPT.py` (OpenAI GPT-4/GPT-4o with token management and error handling)
-  - `cleanup_qa_results_json.py` (Cleans up QA output JSON)
-- **Tagging & Metadata Enrichment:**
+  - `generate_qa_pairs.py` (T5-based)
+  - `generate_qa_pairs_via_GPT.py` (GPT-4/GPT-4o with token-aware chunking)
+  - `cleanup_qa_results_json.py`
+- **Metadata Enrichment:**
   - `create_entity_tags_with_spacy_in_elasticsearch.py`
-  - `enrich_narrative_data_with_roles_dependencies_and_keywords_by_file_path.py`
-  - `get_word_bank_for_role_types_and_contexts.py`
+  - `add_topics_to_summaries_with_bertropic_with_cuda_support.py`
   - `chronological_inference_by_file_and_folder_names_and_file_content.py`
   - `add_chronology_to_es_index.py`
-- **Fine-Tuning:**
-  - (Configured via fine-tuning configuration files and scripts using OpenAI’s API / Hugging Face Trainer)
+  - `extract_keywords_for_chronology_grouping.py`
+- **Role & Influence Inference:**
+  - `get_word_bank_for_role_types_and_contexts.py`
+  - `enrich_narrative_data_with_roles_dependencies_and_keywords_by_file_path.py`
+- **Fine-Tuning Prep:**
+  - Config files, prompt schemas, and JSON-normalized QA datasets
 
 ---
 
-## Detailed Pipeline Description
+## 🧱 SECTION 1–3: Data Preparation, Chronology Inference, and Metadata Enrichment
 
-### 1. Document Summarization
+---
 
-- **Purpose:**  
-  Transform lengthy, raw lore documents into concise summaries.
+### 📘 Step 1: Summarization and Metadata Collection
 
-- **Implementation Details:**
-  - **Model:** `facebook/bart-large-cnn`  
-  - **Approach:**  
-    - Documents are split into ~1500-character chunks.
-    - Chunks with fewer than 50 tokens are skipped.
-    - Batch processing is implemented via multiprocessing.
-  
-- **Code Snippet:**
+We began by preprocessing our corpus of raw narrative documents and generating clean, structured **summaries** for each.
 
-  ```python
-  from transformers import pipeline
-
-  summarizer = pipeline("summarization", model="facebook/bart-large-cnn", device=0)
-  # Example: Summarize a document chunk
-  summary = summarizer("Long text chunk from the lore document...", max_length=150, min_length=50)
-  print(summary)
-  ```
-
-- **Scripts Involved:**  
-  - `summarize_documents_with_batch_processing.py`
+#### 🛠 Tools Used:
+- Model: `facebook/bart-large-cnn`
+- Tokenization: `tiktoken` for chunking based on GPT-4 token limits
+- Scripts:
   - `summarize_documents_with_batch_processing_only_modified_since_last_processing.py`
+- Batch processing with multiprocessing and GPU acceleration
+
+#### 📄 Output JSON Example:
+
+```json
+{
+  "filename": "Book 12 - Finding\\(Month 0001-06) Geopolitical context for Caladrian mission and the overarching narrative.txt",
+  "summary": "Caladria is a coalition of Western nations struggling to retain their cultural identity amid global changes. The summary outlines the fragile political landscape in which Caladria attempts to preserve its legacy and culture. The narrative reveals increasing tensions with external entities such as Soleria and Elysium, while internal divisions between economic and cultural factions continue to threaten cohesion. Ilyna is positioned as a rising strategic figure whose maneuvering between Caladrian political blocs hints at a larger arc involving diplomacy, cultural hybridization, and influence brokering. These developments set the stage for Caladria’s eventual integration into larger geopolitical structures being discussed at the Solerian summit.",
+  "last_modified": 1728241900000
+}
+```
 
 ---
 
-### 2. Embedding & FAISS Indexing
+### 📆 Step 2: Chronology Inference via Regex + Mapping
 
-- **Purpose:**  
-  Convert summaries into dense vector embeddings for rapid semantic search.
+To support **time-aware filtering**, progressive development tracking, and scoped RAG query context, each document was enriched with an `inferred_chronology` field.
 
-- **Implementation Details:**
-  - **Model:** `all-MiniLM-L6-v2` (SentenceTransformer)
-  
-- **Code Snippet:**
-
-  ```python
-  from sentence_transformers import SentenceTransformer
-  model = SentenceTransformer('all-MiniLM-L6-v2')
-  embeddings = model.encode(["This is a document summary..."])
-  # Embeddings are then indexed in a FAISS index for similarity search.
-  ```
-
-- **Script Involved:**  
-  - `load_documents_for_sentence_transformers.py`
+We used a **multi-layered heuristic system** for this:
 
 ---
 
-### 3. Elasticsearch Integration for Summaries
+#### ✅ A. Filename Regex Heuristic
 
-- **Purpose:**  
-  Store enriched summaries along with metadata (filename, last_modified, tags) in Elasticsearch for flexible and precise querying.
+Regex scanned filenames like `"Month 0001-06"` and extracted date tags directly:
 
-- **Implementation Details:**
-  - **Approach:**  
-    - An Elasticsearch index is created with defined mappings.
-    - Bulk indexing is performed using Python scripts (utilizing `elasticsearch.helpers.bulk()`).
+```python
+if "Month" in filename:
+    match = re.search(r"Month (\d{4}-\d{2})", filename)
+    if match:
+        inferred = match.group(1)
+        source = "filename"
+```
 
-- **Notes:**  
-  - Special attention is given to handling inconsistent document IDs; a deduplication script is planned.
+**Example Output:**
 
----
-
-### 4. QA Pair Generation & Cleanup
-
-#### 4.1. Hugging Face Pipeline Approach
-
-- **Purpose:**  
-  Generate QA pairs using a T5-based model.
-
-- **Implementation Details:**
-  - **Model:** `valhalla/t5-base-qg-hl`  
-  - **Technique:**  
-    - Use the Hugging Face `pipeline` with PyTorch’s DataLoader for batch processing.
-    - GPU acceleration enabled via `device=0`.
-
-- **Script Involved:**  
-  - `generate_qa_pairs.py`
-
-- **Code Snippet:**
-
-  ```python
-  from transformers import pipeline
-  question_generator = pipeline('question-generation', model='valhalla/t5-base-qg-hl', device=0)
-  questions = question_generator("Document summary text here...")
-  print(questions)
-  ```
-
-#### 4.2. GPT-Based Approach
-
-- **Purpose:**  
-  Generate QA pairs with OpenAI’s GPT-4/GPT-4o API for more complex contexts.
-
-- **Implementation Details:**
-  - **Models:** GPT-4, dynamically switching to GPT-4o if token limits are exceeded.
-  - **Techniques:**
-    - Token counting via `tiktoken`.
-    - Splitting text into manageable chunks with `split_text_by_token_limit()`.
-    - Robust error handling and retry logic with logging (outputting to `debug_log.txt`).
-
-- **Script Involved:**  
-  - `generate_qa_pairs_via_GPT.py`
-
-- **Code Snippet:**
-
-  ```python
-  import tiktoken
-  def count_tokens(text):
-      encoding = tiktoken.encoding_for_model("gpt-4")
-      return len(encoding.encode(text))
-  
-  # Call generate_questions_gpt() from the script to process document chunks.
-  ```
-
-#### 4.3. QA Output Cleanup
-
-- **Purpose:**  
-  Fix formatting errors in the QA output JSON to ensure data consistency.
-
-- **Implementation Details:**
-  - **Technique:**  
-    - The function `fix_json_format` in `cleanup_qa_results_json.py` attempts direct JSON parsing and, if that fails, performs string replacements (e.g., replacing '}{' with '},{').
-
-- **Script Involved:**  
-  - `cleanup_qa_results_json.py`
-
-- **Code Snippet:**
-
-  ```python
-  import json
-  def fix_json_format(raw_text):
-      try:
-          return json.loads(raw_text)
-      except json.JSONDecodeError:
-          corrected_text = raw_text.replace('}{', '},{')
-          return json.loads(corrected_text)
-  ```
-
-- **Output:**  
-  - Corrected QA pairs are saved to `corrected_entries.json`; problematic entries are logged in `still_errors.json`.
+```json
+{
+  "file_path": "Book 12 - Finding\\(Month 0001-06) Post-David and Sarah's Trips.txt",
+  "inferred_chronology": "0001-06",
+  "chronology_source": "filename",
+  "chronology_notes": "Direct match in filename"
+}
+```
 
 ---
 
-### 5. Tagging and Metadata Enrichment
+#### ✅ B. `books_to_months_mapping.json`
 
-#### 5.1. Entity Extraction
+A structured fallback mapping allowed month inference for ambiguous files:
 
-- **Purpose:**  
-  Extract and deduplicate named entities for metadata enrichment.
+```json
+[
+  {
+      "book_title": "Book 12",
+      "chronology": "0001-06 to 0001-07",
+      "months_covered": [
+          "0001-06",
+          "0001-07"
+      ]
+  }
+]
+```
 
-- **Implementation Details:**
-  - **Model:** `en_core_web_trf` (spaCy)
-  - **Technique:**  
-    - Process text using `nlp(text)` from spaCy.
-    - Extract entities of types `PERSON`, `ORG`, and `GPE`.
-    - Deduplicate and store results in the Elasticsearch field `entity_tags`.
+**Output using fallback:**
 
-- **Script Involved:**  
-  - `create_entity_tags_with_spacy_in_elasticsearch.py`
-
-- **Code Snippet:**
-
-  ```python
-  import spacy
-  nlp = spacy.load("en_core_web_trf")
-  doc = nlp("Sample summary text about David and Durmston.")
-  entities = [ent.text for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "GPE"]]
-  print(set(entities))  # Deduplicated entities
-  ```
-
-#### 5.2. Topic Modeling
-
-- **Purpose:**  
-  Extract thematic keywords from document summaries.
-
-- **Implementation Details:**
-  - **Model:** `all-mpnet-base-v2` with BERTopic
-  - **Technique:**  
-    - Generate embeddings using `SentenceTransformer("all-mpnet-base-v2")`.
-    - Use BERTopic to cluster embeddings (with parameters like `min_topic_size=3` and dynamic topic adjustment).
-    - Extract representative keywords and store them in the Elasticsearch field `tags`.
-
-- **Script Involved:**  
-  - Integrated into the tagging process (documented in our pipeline).
-
-#### 5.3. Chronology Tagging
-
-- **Purpose:**  
-  Infer and assign temporal metadata to documents.
-
-- **Implementation Details:**
-  - **Technique:**  
-    - Use regex to extract date-like strings.
-    - Reference `books_to_months_mapping.json` to map book titles to chronology ranges.
-    - Apply fallback mechanisms if direct dates are not found.
-  
-- **Script Involved:**  
-  - `chronological_inference_by_file_and_folder_names_and_file_content.py`
-
-- **Code Snippet:**
-
-  ```python
-  import re
-  pattern = r"\d{4}-\d{2}"
-  dates = re.findall(pattern, "Document filename or content with date 0001-02")
-  print(dates)
-  ```
-
-- **Additional Script:**  
-  - `add_chronology_to_es_index.py` updates the Elasticsearch index with inferred chronology.
-
-#### 5.4. Deduplication for Elasticsearch
-
-- **Purpose:**  
-  Standardize document IDs and merge duplicate entries.
-
-- **Planned Resolution:**  
-  - Develop a deduplication script using Python and `elasticsearch.helpers.bulk()`.
+```json
+{
+  "file_path": "Book 12 - Finding\\End of Book 12 Summary.md",
+  "inferred_chronology": "0001-06 to 0001-07",
+  "chronology_source": "book_to_month_mapping",
+  "chronology_notes": "Inferred from book to month mapping"
+}
+```
 
 ---
 
-### 6. Fine-Tuning Process
+### 🧠 SECTION 3: Metadata Enrichment
 
-#### 6.1. Data Curation and Preparation
+Once summaries and chronology were set, we transformed each summary into a rich, queryable semantic unit.
 
-- **QA Pair Generation:**  
-  - **Scripts:**  
-    - `generate_qa_pairs.py`
-    - `generate_qa_pairs_via_GPT.py`
-  - **Data Cleaning:**  
-    - `cleanup_qa_results_json.py`
-  - **Outcome:**  
-    - QA pairs are standardized with clear labels (filename, question, answer) and enriched with metadata (chronology, entity tags).
+#### 3A. Named Entity Recognition (`entity_tags`)
 
-#### 6.2. Training Process Specifics
+**Tool:** `spaCy` + `en_core_web_trf`  
+**Goal:** Identify all `PERSON`, `ORG`, and `GPE` tags.
 
-- **Base Model:**  
-  - GPT-4 is used, with dynamic fallback to GPT-4o for larger contexts.
-- **Frameworks:**  
-  - OpenAI’s fine-tuning API is leveraged.
-  - Experiments conducted with Hugging Face Transformers’ Trainer API.
-- **Environment and Tools:**  
-  - OpenAI Python client, detailed logging via Python’s `logging` module (logs stored in `debug_log.txt`), and configuration files in JSON/YAML.
-- **Hyperparameters:**  
-  - Learning rates between 1e-5 and 5e-5.
-  - Training over 3–5 epochs with early stopping to mitigate overfitting.
-  
-#### 6.3. Iterative Adjustments and Challenges
+```python
+doc = nlp(summary_text)
+entity_tags = list(set([ent.text for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "GPE"]]))
+```
 
-- **Overfitting:**  
-  - Addressed by reducing epochs and implementing early stopping.
-- **Noisy Data:**  
-  - Handled by rigorous cleaning using `cleanup_qa_results_json.py`.
-- **Token Limit Issues:**  
-  - Solved by splitting long texts and switching to GPT-4o when needed.
-- **Documentation and Artifacts:**  
-  - Configuration files, key scripts, and logs (e.g., `debug_log.txt`) are maintained.
+**Sample Output:**
+
+```json
+{
+  "filename": "Book 12 - Finding\\(Month 0001-06) Geopolitical context for Caladrian mission and the overarching narrative.txt",
+  "entity_tags": ["Caladria", "Ilyna", "Soleria"]
+}
+```
 
 ---
 
-### 7. Additional Technical and Process Insights
+#### 3B. Topic Modeling via BERTopic (`tags`)
 
-- **Error Handling:**  
-  - Robust error handling across summarization, QA extraction, and fine-tuning, including retry mechanisms and incremental saving.
-- **Performance and Cost Trade-offs:**  
-  - Notably, switching from GPT-4 (or GPT-4-0613) to GPT-4o when needed.
-- **Iterative Refinement:**  
-  - Use of intermediate JSON files (e.g., `document_summaries_temp.json`, `questions_temp.json`) for debugging.
-- **Inter-Phase Dependencies:**  
-  - Seamless flow from summarization to FAISS and Elasticsearch indexing, then to QA extraction, tagging, and finally fine-tuning.
+**Tools:**
+- `BERTopic` with `all-mpnet-base-v2` SentenceTransformer
+- CUDA acceleration for embedding speed
 
----
+```python
+topic_model = BERTopic(
+    embedding_model=SentenceTransformer("all-mpnet-base-v2", device="cuda"),
+    min_topic_size=3,
+    nr_topics="auto"
+)
+topics, probs = topic_model.fit_transform(summaries)
+```
 
-### 8. Future Enhancements and Roadmap
+**Cleaned tag output:**
 
-- **Embedding QA Questions into FAISS:**  
-  - Use models like MiniLM for embedding QA pairs.
-- **Dynamic Ranking Prototypes:**  
-  - Experiment with Elasticsearch scoring functions that leverage enriched metadata.
-- **Function-Calling for Query Routing:**  
-  - Integrate retrieval functions such as `search_FAISS()` and `search_ES()`.
-- **Advanced Semantic Search:**  
-  - Implement Elasticsearch’s kNN search capability.
-- **Continuous Evaluation and Scaling:**  
-  - Regular performance assessments, refining tagging algorithms, and scaling the system.
-- **Extended Future Directions:**  
-  - Adapt the pipeline to different domains.
-  - Incorporate real-time feedback loops.
-  - Enhance multilingual support and domain-specific customizations.
+```json
+{
+  "filename": "Book 12 - Finding\\(Month 0001-06)...",
+  "tags": ["soleria", "cultural", "technological", "influence"]
+}
+```
 
 ---
 
-### 9. Summary of the Updated Map
+#### 3C. Thematic Tagging (`themes`)
 
-1. **Project Initiation:**  
-   - Raw lore documents are collected, forming the foundation for all subsequent processing.
+**Tool:** `extract_keywords_for_chronology_grouping.py`
 
-2. **Document Summarization:**  
-   - Raw texts are split, processed through `facebook/bart-large-cnn` with GPU acceleration, and incrementally saved using batch processing scripts.
+**Approach:**
+- Group files by month
+- Use regex + `collections.Counter` to extract thematic words
+- Remove stopwords and collapse to pipe-delimited string
 
-3. **FAISS Vector Indexing:**  
-   - Summaries are embedded using SentenceTransformer (`all-MiniLM-L6-v2`) and indexed in FAISS, supported by `load_documents_for_sentence_transformers.py`.
+**Output:**
 
-4. **Elasticsearch for Summaries:**  
-   - An Elasticsearch index is created with mappings for filename, summary, modification date, and tags; bulk indexing is performed with plans for deduplication.
-
-5. **QA Extraction & Full-Text Retrieval:**  
-   - Full documents are parsed with token-aware chunking (using `tiktoken`).
-   - QA pairs are generated via:
-     - **Hugging Face pipeline:** `generate_qa_pairs.py` using `valhalla/t5-base-qg-hl`.
-     - **GPT API approach:** `generate_qa_pairs_via_GPT.py` using GPT-4/GPT-4o with robust error handling and token management.
-   - QA output is cleaned using `cleanup_qa_results_json.py` and saved to `questions_output.json`.
-
-6. **Tagging and Metadata Enrichment:**  
-   - **Entity Extraction:** Using `spaCy` with `en_core_web_trf` to extract and deduplicate entities, stored in `entity_tags`.
-   - **Topic Modeling:** Using BERTopic with `SentenceTransformer("all-mpnet-base-v2")` to generate thematic keywords stored in `tags`.
-   - **Chronology Tagging:** Using regex-based extraction and mapping via `books_to_months_mapping.json` in `chronological_inference_by_file_and_folder_names_and_file_content.py`, with output in `chronology_map_with_books.json`.
-   - **Deduplication:** Planned script to resolve inconsistencies in document IDs.
-
-7. **Fine-Tuning Process:**  
-   - QA pairs from the generation and cleanup processes serve as the training dataset.
-   - Fine-tuning is performed on GPT-4 (with fallback to GPT-4o) via OpenAI’s API and Hugging Face Trainer API.
-   - Detailed logging, configuration, and hyperparameter tuning (learning rates, epochs, early stopping) are used to refine the model.
-   - Challenges such as overfitting and noisy data are addressed iteratively.
-
-8. **Additional Technical and Process Insights:**  
-   - Robust error handling, iterative refinement, and inter-phase dependencies are emphasized.
-   - Intermediate checkpoints ensure reliable debugging and process improvement.
-
-9. **Future Enhancements and Roadmap:**  
-   - Embedding QA pairs into FAISS, dynamic ranking prototypes, function-calling for query routing, advanced semantic search, continuous evaluation, and extended directions for cross-domain applications and multilingual support.
+```json
+{
+  "filename": "Book 10 - Growth\\Month 0001-05\\2024-10-01 Book 10 Month 0001-05 Summary.md",
+  "themes": "sarah | joran | control | cultural | personal"
+}
+```
 
 ---
 
-# **Scripts and Models: Quick Reference**
+### 📊 Full Metadata Example
 
-### Scripts
-- **summarize_documents_with_batch_processing.py:**  
-  Uses `facebook/bart-large-cnn` for batch summarization.
-- **summarize_documents_with_batch_processing_only_modified_since_last_processing.py:**  
-  Processes only modified files.
-- **load_documents_for_sentence_transformers.py:**  
-  Generates embeddings using SentenceTransformer (`all-MiniLM-L6-v2`) for FAISS indexing.
-- **generate_qa_pairs.py:**  
-  Uses Hugging Face pipeline with `valhalla/t5-base-qg-hl` to generate QA pairs.
-- **generate_qa_pairs_via_GPT.py:**  
-  Uses OpenAI’s GPT-4 (switching to GPT-4o as needed) with token management, logging, and error handling.
-- **cleanup_qa_results_json.py:**  
-  Fixes JSON formatting errors in QA output.
-- **chronological_inference_by_file_and_folder_names_and_file_content.py:**  
-  Infers chronology using regex and mapping files.
-- **add_chronology_to_es_index.py:**  
-  Updates Elasticsearch with inferred chronology.
-- **create_entity_tags_with_spacy_in_elasticsearch.py:**  
-  Extracts and deduplicates named entities using `en_core_web_trf`.
-- **enrich_narrative_data_with_roles_dependencies_and_keywords_by_file_path.py:**  
-  Enriches metadata with role and influence mapping.
-- **get_word_bank_for_role_types_and_contexts.py:**  
-  Maintains a word bank for standardized role types.
-  
-### Models
-- **facebook/bart-large-cnn:** Summarization of raw documents.
-- **all-MiniLM-L6-v2:** Embedding generation for semantic search (FAISS).
-- **valhalla/t5-base-qg-hl:** Question-generation for QA pair creation.
-- **GPT-4 / GPT-4o:** Generating QA pairs from full-text documents with dynamic token handling.
-- **en_core_web_trf:** Named entity extraction for metadata enrichment.
-- **all-mpnet-base-v2:** Used with BERTopic for topic modeling and extracting thematic keywords.
-- **KeyBERT:** (Experimentally used for improved keyword extraction over basic BERT token classification).
+```json
+{
+  "filename": "...Book 12 - Geopolitical context...",
+  "entity_tags": ["Caladria", "Ilyna", "Soleria"],
+  "tags": ["soleria", "cultural", "technological", "influence"],
+  "themes": "sarah | joran | control | cultural | personal",
+  "inferred_chronology": "0001-06"
+}
+```
+
+---
+
+## 🧬 SECTION 4: Character Roles & Influence
+
+This phase enriched each document’s metadata with **relational, hierarchical, and emotional influence information** between characters.
+
+---
+
+### 🎯 Goals:
+
+- Assign characters **primary roles** (political, cultural, scientific, etc.)
+- Score **influence strength** per domain
+- Map **dependencies** between characters
+
+---
+
+### 🔧 Tooling: Heuristics + GPT-4
+
+---
+
+#### ✅ Heuristics (Keyword Mapping)
+
+Script: `get_word_bank_for_role_types_and_contexts.py`
+
+```python
+ROLE_KEYWORDS = {
+    "diplomatic": ["ambassador", "treaty"],
+    "scientific": ["research", "discovery"],
+    "cultural": ["festival", "tradition"]
+}
+```
+
+Main logic script: `enrich_narrative_data_with_roles_dependencies_and_keywords_by_file_path.py`
+
+```python
+if "David" in summary and any(word in summary for word in ROLE_KEYWORDS["political"]):
+    influence_map["David"]["governance"]["score"] += 1
+```
+
+---
+
+#### 🤖 GPT-4-Aided Role Extraction
+
+Prompting GPT-4 with:
+
+```python
+system_prompt = """
+Given the summary, extract each character's primary role and influence by domain.
+"""
+```
+
+**Sample Output:**
+
+```json
+{
+  "character_roles": [
+    {
+      "David": {
+        "primary": {
+          "roles": [
+            {
+              "type": "cultural",
+              "description": "Symbolizes Soleria’s ethical principles"
+            },
+            {
+              "type": "political",
+              "description": "Guides Soleria’s strategic direction"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "character_influence": [
+    {
+      "David": {
+        "governance": {
+          "influence_score": 10,
+          "dependencies": ["Sarah", "Dalakash"]
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+### ⚠️ Limitations
+
+- Scores are local to summaries, not normalized globally
+- Role disambiguation across docs is still in development
+- GPT output occasionally requires schema validation
+
+---
+
+## 🧪 SECTION 5: Fine-Tuning GPT-4o with Custom QA Data
+
+Once enriched metadata and QA pairs were generated, we moved to the final and most critical phase: **fine-tuning a GPT-4o model** for domain-specific, high-fidelity question answering across narrative documents.
+
+---
+
+### 🎯 Objective
+
+Transform GPT-4o into a context-aware reasoning assistant capable of answering nuanced questions about the fictional Soleria universe by:
+
+- Training on **981 structured QA examples**, each enriched with summaries, themes, tags, and role data
+- Encoding **domain-specific style, tone, and content knowledge**
+- Boosting accuracy for long-range referential questions, character dynamics, and cross-document inference
+
+---
+
+### ⚙️ Model & Training Setup
+
+| Parameter | Value |
+|----------|-------|
+| **Base model** | `gpt-4o-2024-08-06` |
+| **Fine-tuned model ID** | `ft:gpt-4o-2024-08-06:personal:soleria:ARq2SEpI` |
+| **Training tokens** | 1,842,963 |
+| **Epochs** | 3 |
+| **Batch size** | 1 |
+| **Learning rate multiplier** | 2 |
+| **Seed** | 1190716480 |
+| **Validation** | None (focused on complete set ingestion) |
+
+![Fine-tuning Loss Curve](attachment:image.png)  
+_Training loss showed a consistent downward trend, stabilizing near 1.2._
+
+---
+
+### 🧰 Source Data & Format
+
+The training dataset originated from QA pairs stored in the `questions-answers` Elasticsearch index, extracted and verified post-enrichment:
+
+```json
+{
+    "_index": "questions-answers",
+    "_id": "ISxsD5MBDOvwJi72CT88",
+    "_score": 1,
+    "_source": {
+        "filename": "2024-10-02 Book 10 General Summary By Month.md",
+        "question": "What are the prevalent themes in the book summary from 0001-02 to 0001-06?",
+        "answer": "The prevalent themes are scientific and diplomatic progress, navigating complex moral and ethical dilemmas, deepening relationships, and potential risks from external entities."
+    }
+}
+```
+
+This content was normalized into `.jsonl` format:
+
+```json
+{
+    "filename": "2024-10-02 Book 10 General Summary By Month.md",
+    "question": "What is the purpose of the Academic Olympics?",
+    "answer": "The Academic Olympics aims to promote multi-nation collaboration where philosophers would debate the fundamentals of truth, ethics, and existence. The objective is to ensure broader cultural exchange and intellectual alliance."
+},
+{
+    "filename": "2024-10-02 Book 10 General Summary By Month.md",
+    "question": "What advancements were made in the teleportation technology and ZPE research during this time?",
+    "answer": "The teleportation technology reached a point where complex systems could be transported with minimal errors, representing a breakthrough for Soleria's technological superiority. The bulk spacetime structure around their brane showed fluctuations, hinting at a potential rich energy source."
+},
+{
+    "filename": "2024-10-02 Book 10 General Summary By Month.md",
+    "question": "What potential risks are associated with the discovered energy-rich location in the ZPE mapping and bulk spacetime structure?",
+    "answer": "The potential risks include vulnerability to more advanced entities from within the bulk. The concern is that these entities might detect and exploit Soleria's energy-rich location."
+}
+```
+
+We also injected complex role and relationship modeling into the dataset, often in the form of nested JSON:
+
+```json
+{
+  "character_roles": [
+    {
+      "Luna": {
+        "primary": {
+          "context": "AI Guide and Protector of the Divine Twins",
+          "roles": [
+            {
+              "type": "ethical",
+              "description": "Balances profound knowledge with loyalty, functioning as the ethical and technological architect."
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "character_influence": [
+    {
+      "Luna": {
+        "scientific_advancement": {
+          "influence_score": 10,
+          "dependencies": ["Durmston", "Dalakash"]
+        },
+        "emotional_dynamics": {
+          "influence_score": 8,
+          "dependencies": ["Sarah"]
+        }
+      }
+    }
+  ]
+}
+```
+
+This schema enabled the model to learn **multi-role inference**, domain-weighted dependencies, and relative influence mappings across documents.
+
+---
+
+### 💬 Dialogue Integration (Prompt Format)
+
+To preserve conversational fidelity, training pairs were wrapped using OpenAI’s `chat` message schema. A representative training example:
+
+```json
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a sophisticated AI narrator deeply embedded in the complex world of Soleria, advancing a narrative rich in strategic, psychological, and emotional nuance. Assume the user has a profound grasp of Soleria's lore and themes..."
+    },
+    {
+      "role": "user",
+      "content": "What are the prevalent themes in the book summary from 0001-02 to 0001-06?"
+    },
+    {
+      "role": "assistant",
+      "content": "The prevalent themes are scientific and diplomatic progress, navigating complex moral and ethical dilemmas, deepening relationships, and potential risks from external entities."
+    }
+  ]
+}
+```
+
+> 🧠 This ensured that each prompt not only matched the tone and rhythm of Soleria’s canon, but could also be used for **multi-agent interaction** in downstream deployments.
+
+---
+
+### 🧪 Post-Fine-Tuning Validation
+
+The final model was deployed and queried across hundreds of test prompts. Results showed:
+
+- **Strong factual alignment**, especially with summaries and chronologically adjacent events  
+- High accuracy when answering **motivational and relational queries**, e.g.:  
+  > *"What is the relationship between David and Dalakash, and how does it affect Dalakash's actions?"*
+
+While stylistically terse, the model **consistently returned meaningful, contextually grounded answers** — reflecting the structured training input’s clarity.
+
+This precision made it ideal as a **query parsing or mid-tier summarization agent** in a larger, multi-model RAG architecture.
+
+---
+
+### ⚠️ Limitations & Considerations
+
+- **Validation Split**: Omitted due to limited dataset size (981 examples) and the importance of full thematic coverage.
+- **Overconfidence**: Rare, given the model’s laconic tendencies — but speculative extrapolations were still possible if prompts were ambiguous.
+- **Tone Constraint**: The fine-tuned model was **more modular and factual than expressive**. This limitation became a feature:
+  - It was repurposed as a **semantic bridge agent**, parsing user queries and Elasticsearch results before handing off to GPT-4o for narrative output.
+- **Lesson Learned**: Short training responses + high-token density => terse but extremely **stable** models. Future versions might mix short factuals with longform samples to allow better stylistic range.
+
+---
+
+## 🧪 SECTION 6: Runtime Pipeline Execution and Dialogue Flow
+
+With the fine-tuned GPT-4o model (`ft:gpt-4o-2024-08-06:personal:soleria:ARq2SEpI`) and enriched Elasticsearch/FAISS indexes now live, the production RAG system orchestrates a continuous, context-aware, multi-agent inference pipeline.
+
+This pipeline is encapsulated in an object-oriented `GPTClient` interface, which maintains chat history, controls token budgets, and supervises context rotation and summarization.
+
+---
+
+### 🎯 Architectural Overview
+
+The following execution loop is what governs live user interaction, leveraging the enriched indexes and fine-tuned models. This loop balances real-time retrieval, relevance compression, conversation persistence, and token-aware memory rotation.
+
+```plaintext
+    User Prompt
+        ↓
+    FAISS Query (vector-based similarity)
+        ↓
+    Elasticsearch Retrieval (structured, tag-aware)
+        ↓
+    GPT-4o Fine-Tuned (contextual filter + summarizer)
+        ↓
+    GPT-4o Base Model (final response generator)
+        ↓
+    Response → Stored → Sent to User
+```
+
+---
+
+### ⚙️ Step-by-Step Execution Flow
+
+#### 1. **Query Resolution via FAISS and Elasticsearch**
+
+The pipeline begins with FAISS-based vector search:
+
+```python
+faiss_results = query_faiss(user_prompt)
+```
+
+These vectors are resolved to filenames and matched against enriched summaries in Elasticsearch:
+
+```python
+document_data = retrieve_documents_from_elasticsearch(faiss_results, user_prompt)
+```
+
+Each entry returns a `filename` and `summary`, which are used for downstream prompt conditioning.
+
+---
+
+#### 2. **Contextual Filtering via Fine-Tuned GPT-4o**
+
+Each document summary is wrapped and sent to the fine-tuned GPT model as follows:
+
+```python
+rag_check_object = GPTClient(
+    role="... tailored summary context extractor ...",
+    max_tokens=5000,
+    context=self.context,
+    model="ft:gpt-4o-2024-08-06:personal:soleria:ARq2SEpI"
+)
+new_content_summary = rag_check_object.send_prompt_for_RAG(doc, query)
+```
+
+This step acts as a **semantic compressor**, translating retrieved knowledge into relevance-weighted summaries aligned with ongoing conversation goals.
+
+---
+
+#### 3. **Context Integration with Token-Aware Safeguards**
+
+The `GPTClient` object maintains a growing chat context (`self.context`). Before appending new content, it token-checks:
+
+```python
+if self.count_tokens(self.context) + self.count_tokens(new_content) > self.max_context_tokens:
+    self.context = self.summarize_context(self.context)
+```
+
+Summarization is handled via a recursive GPT call:
+
+```python
+context_prompt = f"Provide a comprehensive summary of: {self._context}"
+response = self.client.chat.completions.create(...)
+self.context = extract_text(response)
+```
+
+📌 **Token management is explicitly enforced** using `tiktoken`:
+
+```python
+encoding = tiktoken.encoding_for_model(self.model)
+token_count = len(encoding.encode(text))
+```
+
+This guarantees the prompt never overflows the model's context window, enabling **long-form, memory-persistent dialogue.**
+
+---
+
+#### 4. **Final Response Generation via Base GPT-4o**
+
+After updating the context with summarized content, the final step wraps:
+
+- The entire chat history
+- Summarized RAG results
+- The user’s latest question
+
+This full state is sent to a general-purpose GPT-4o model (optionally the same or separate instance) to generate the user-facing reply:
+
+```python
+response = self.client.chat.completions.create(
+    model=self._model,
+    messages=[{"role": "user", "content": full_prompt}]
+)
+```
+
+This response is stored in:
+
+```python
+self.last_response
+```
+
+and the dialogue history is appended via:
+
+```python
+self.context += f"\nUser: {user_input}\nGPT: {response_text}"
+```
+
+---
+
+### 🧠 Object-Oriented Encapsulation
+
+The system is driven by two independent `GPTClient` objects:
+
+- A **RAG summarizer**, with fine-tuned GPT-4o, scoped to ~5000 tokens.
+- A **dialogue generator**, using either base GPT-4o or an augmented prompt.
+
+Each object handles:
+
+- Internal token accounting
+- Role setting (`self.role`)
+- Chat and document state memory (`self.context`, `self.context_file_names`)
+- Transparent token-aware summarization fallback (`summarize_context()`)
+
+---
+
+### 📝 Example: RAG Summarizer Prompt
+
+```python
+full_prompt = f"""
+{self.role}
+Here is the context of the chat:\n{self.context}
+Here is what was retrieved from the RAG implementation: {new_content}
+Here is the user's current prompt:\n{user_prompt}
+"""
+```
+
+Output from this stage is added to the active context as `new_content_summary`, contributing to the next GPT response.
+
+---
+
+### 📦 Conversation Continuity & Summarization Policy
+
+- Context history is only truncated via **GPT-generated summarization** when token thresholds are hit.
+- Summarization includes character dynamics, geopolitical themes, and symbolic motifs to preserve coherence.
+- `context_file_names` is used to **prevent redundant RAG summary injection** during ongoing dialogue.
+
+```python
+if filename in self.context_file_names:
+    continue
+```
+
+When summarization occurs:
+
+- `context_file_names` is cleared
+- `self.context` is replaced with GPT-generated summary
+- Logging is maintained for introspection
+
+---
+
+### 🔄 Continuous Feedback Loop
+
+Each interaction includes:
+
+1. Elastic/FAISS retrieval
+2. GPT summary compression
+3. Response generation
+4. State persistence
+
+This allows **unbounded, thematically consistent dialogue** across dozens of iterations, despite token window limitations.
+
+---
+
+## 🧭 Next Steps & Deployment Considerations
+
+- Extend support for **real-time function calling** to enable narrative branching and in-universe simulations.  
+- Implement **reinforcement learning** techniques to continuously improve response quality.  
+- Build a pipeline to **dynamically append new narrative** to both the Elasticsearch index and fine-tuned GPT training data.  
+- Further modularize `GPTClient` for **multi-turn persona simulation** and emotional-state conditioning.  
+- Integrate with front-end interfaces (e.g., **Streamlit**, **Discord bot**) for immersive, RAG-driven storytelling experiences.
+
+> For inquiries, collaboration, or demonstration, reach out:  
+> 📧 danielLGuilliams3@outlook.com  
+> 🌐 [github.com/guilliams3](https://github.com/guilliams3)
