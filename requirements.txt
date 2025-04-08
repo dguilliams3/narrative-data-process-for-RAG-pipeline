@@ -1,0 +1,24 @@
+# Core app
+flask
+python-dotenv
+requests
+elasticsearch==8.11.1
+
+# OpenAI & tokenizer support
+openai
+tiktoken
+
+# Embedding and vector search
+faiss-cpu
+sentence-transformers==3.4.1
+transformers==4.49.0
+tokenizers==0.21.0
+
+# Torch backend (note: 2.6.0 is latest as of now)
+torch==2.6.0
+
+# ML utilities
+scikit-learn==1.6.1
+scipy==1.15.2
+numpy==2.2.3
+keybert==0.7.0
