@@ -17,4 +17,8 @@ es_bulk_errors.json
 # Actual story files are omitted from repo, but placeholders are kept for testing.
 faiss_index.bin
 summaries_index.faiss
+index_to_filename.json
+
+# Contains the actual contents that populate the ES instances.  A few were left in the placeholder version to showcase.
 summaries.json
+questions-answers.json
