@@ -20,6 +20,8 @@ This project implements a highly structured **Retrieval-Augmented Generation (RA
 
 - **Hands-On LLM Orchestration**: Used OpenAI’s API directly for both fine-tuning and runtime interaction. Incorporated structured prompt design, dynamic role conditioning, and functionally distinct GPT agents.
 
+- **Containerized Deployment via Docker Compose**: Packaged the full stack—including FAISS, Elasticsearch, and Flask-based RAG API—into a Docker Compose environment for reproducible, isolated deployment. Supports volume mounting, service configuration, and runtime orchestration.
+
 > Built as a hybrid between **data engineering**, **information retrieval**, and **generative AI orchestration**—this pipeline showcases end-to-end model interaction with full traceability and introspection.
 
 ---
@@ -680,6 +682,118 @@ Each interaction includes:
 4. State persistence
 
 This allows **unbounded, thematically consistent dialogue** across dozens of iterations, despite token window limitations.
+
+---
+
+## 🐳 SECTION 7: Deployment, Containerization, and Volume Mounts
+
+This RAG pipeline is fully containerized using **Docker** and orchestrated via **`docker-compose`** to streamline reproducibility, development, and runtime inference.
+
+> ⚠️ **Note:** The current public version uses **placeholder files** for the FAISS index and Elasticsearch documents. The full pipeline is functional and modular, but **requires the real narrative data and embeddings** to be populated for live querying.  
+> These placeholders exist solely to demonstrate file structure and loading logic. Actual deployment with inference capability requires rebuilding the indexes from the original lore corpus.
+
+---
+
+### ⚙️ Docker Services Overview
+
+| Service | Purpose |
+|--------|---------|
+| `elasticsearch` | Runs a local Elasticsearch node with volume-mounted persistent storage. |
+| `rag-api` | Python Flask API that wraps all GPT logic and FAISS/ES querying via the `GPTClient`. |
+
+---
+
+### 📦 Dockerfile: Multi-Stage Build for RAG Inference
+
+The `rag-api` container uses a multi-stage `Dockerfile` with:
+
+- Python 3.11 base image
+- `pip`-based install from `requirements.txt`
+- `tokenizers`, `spacy`, and CUDA tooling where supported
+- Copies all local scripts into the `/app/` directory
+
+> 🧠 OpenAI keys and model info are injected via `.env`, never hardcoded.
+
+---
+
+### 🔁 docker-compose.yaml (with placeholders)
+
+Key settings:
+
+```yaml
+services:
+  elasticsearch:
+    image: elasticsearch:8.6.2
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./app:/app
+      - ./summaries-placeholder.json:/data/summaries.json
+      - ./questions-answers-placeholder.json:/data/questions.json
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+
+volumes:
+  esdata:
+```
+
+---
+
+### 🚀 Local Setup Instructions
+
+```bash
+# 1. Build and start all services
+docker-compose up --build
+
+# 2. Populate Elasticsearch using placeholder summaries
+docker exec -it <rag-api-container> python /app/populate_elasticsearch.py
+```
+
+> ⚠️ The summaries and QA files here are non-functional stubs. Replace them with full processed outputs for live use.
+
+---
+
+### 📁 Volume Mounts & Structure
+
+| Host File | Container Path | Role |
+|-----------|----------------|------|
+| `app/` | `/app/` | Source scripts and pipeline modules |
+| `summaries-placeholder.json` | `/data/summaries.json` | Stand-in for full narrative summaries |
+| `questions-answers-placeholder.json` | `/data/questions.json` | Stand-in for full QA pair corpus |
+
+---
+
+### 🔐 Environment and Secrets
+
+- `.env` file contains:
+  - `OPENAI_API_KEY`
+  - `GPT_MODEL`, `GPT_MAX_TOKENS`, `GPT_MAX_CONTEXT_TOKENS`
+  - Optional: `ELASTICSEARCH_HOST`
+- This file is **never committed** thanks to `.gitignore` and GitHub Push Protection.
+- The system expects this file at project root for local and container builds.
+
+---
+
+### 📌 Summary
+
+This section wraps the full deployment lifecycle:
+
+✅ **Scripts and logic are container-ready**  
+✅ **Pipeline stages are modular and reproducible**  
+❌ **Out-of-the-box querying requires your data (not placeholders)**  
+
+> With minor path or dataset edits, this system can be adapted to any narrative corpus, enterprise knowledge base, or fine-tuned assistant.
 
 ---
 
