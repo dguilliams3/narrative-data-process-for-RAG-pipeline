@@ -8,3 +8,13 @@ flask_session/
 data/
 indexes/
 *.log
+es_bulk_errors.json
+
+*.pem
+*_credentials.csv
+# NOTE: FAISS index files are committed intentionally. Rebuild scripts depend on their presence.
+
+# Actual story files are omitted from repo, but placeholders are kept for testing.
+faiss_index.bin
+summaries_index.faiss
+summaries.json
