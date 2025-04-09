@@ -1,5 +1,11 @@
 # 📘 RAG Narrative Data Management Pipeline
 
+**Live Demo:** [http://100.28.9.20:5000](http://100.28.9.20:5000)  
+> Ask about the world of Soleria — type a question and get context-rich answers from a fine-tuned GPT-4o system.
+
+**Note:** This is a basic HTTP deployment on an EC2 instance.  
+A reverse proxy (Nginx) and HTTPS setup via Let's Encrypt are in progress to productionize the demo.
+
 ---
 
 ## 🧭 Overview
@@ -813,7 +819,17 @@ This section wraps the full deployment lifecycle:
 
 ---
 
-## 🧭 Next Steps & Deployment Considerations
+## Coming Soon
+
+- Reverse proxy + HTTPS (Nginx + Certbot)
+- Public domain via Route 53
+- Auth-optional query logging and usage stats
+- Frontend polish and loading feedback
+- Multiple corpus toggles (e.g., switch between "Soleria" and other worlds)
+
+---
+
+## 🧭 Possible Next Steps & Deployment Considerations
 
 - Extend support for **real-time function calling** to enable narrative branching and in-universe simulations.  
 - Implement **reinforcement learning** techniques to continuously improve response quality.  
