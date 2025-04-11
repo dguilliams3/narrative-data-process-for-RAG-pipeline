@@ -1,4 +1,24 @@
-venv/
+# 🔥 Common junk
 __pycache__/
-.git/
 *.pyc
+*.pyo
+*.log
+
+# 🧠 Training or precomputed placeholder junk
+*_placeholder.*
+*-placeholder.*
+placeholder*.json
+
+# 🐍 Virtual env (local only)
+venv/
+
+# 💾 Elasticsearch disk state (regenerated on container start)
+elasticsearch_snapshots/
+
+# 💣 IDE/editor bloat
+.vscode/
+.idea/
+
+# Useful for GitHub or rebuilding ES indexes later, but not needed for deployment
+questions-answers.json
+images/
