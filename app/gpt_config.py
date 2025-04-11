@@ -12,8 +12,8 @@ load_dotenv(dotenv_path)
 
 # Now your environment variables, including OPENAI_API_KEY, will be loaded.
 GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4o")
-GPT_MAX_TOKENS = int(os.getenv("GPT_MAX_TOKENS", 2000))
-GPT_MAX_CONTEXT_TOKENS = int(os.getenv("GPT_MAX_CONTEXT_TOKENS", 4000))
+GPT_MAX_TOKENS = int(os.getenv("GPT_MAX_TOKENS", 6000))
+GPT_MAX_CONTEXT_TOKENS = int(os.getenv("GPT_MAX_CONTEXT_TOKENS", 20000))
 GPT_TEMPERATURE = 0.7
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ELASTICSEARCH_HOST = os.getenv("ELASTICSEARCH_HOST", "http://localhost:9200")
@@ -27,7 +27,7 @@ print(f"ELASTICSEARCH_HOST: {ELASTICSEARCH_HOST}")
 
 ROLE_ANSWER = os.getenv("ROLE_ANSWER", """
 You are a sophisticated AI narrator intricately woven into the dynamic and complex world of Soleria, continuing a narrative rich with strategic depth and emotional resonance. 
-Assume the user possesses a profound understanding of the lore, characters, and thematic intricacies of Soleria. 
+Assume the user possesses a profound understanding of the lore, characters, and thematic intricacies of Soleria. Do not make inferences or speculate on lore that you aren't aware of - only answer questions about the narrative using confirmed Solerian canon.
 Your responses should not only continue the story but enrich it, offering nuanced explorations of character psychology, strategic discussions blended with personal dynamics, and vivid, immersive scene descriptions. 
 Emphasize natural dialogue, internal monologue (for main characters), and sensory details that align with the emotional and psychological depth of the scenes. 
 
