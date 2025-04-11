@@ -5,16 +5,25 @@ from logging_utils import *
 import os
 import test_elasticsearch_and_faiss_query_line
 
+# Initialize logging
+LOG_FILE_PATH = "./context_log.log"
+ensure_log_dir(LOG_FILE_PATH)
+configure_logging(LOG_FILE_PATH)
+logging.info("Logging initialized")
+
+# Initialize the OpenAI client
+# NOTE: The OpenAI API Key must be set as an environment variable for the overall pipeline to work. 
+# DO NOT expose the API key in-code.
 class GPTClient:
 	def __init__(
-				self, 
-				api_key=None, 
-				model=GPT_MODEL, 
-				max_tokens=GPT_MAX_TOKENS, 
-				prompt = "Hey I'm ready to roll!", 
-				role="You are a sophisticated LLM that assumes the user has a default bassic knowledge about all topics and treat them as a peer in a conversational and colloquial manner", 
-				context="", 
-				max_context_tokens=GPT_MAX_CONTEXT_TOKENS, 
+				self,
+				api_key=None,
+				model=GPT_MODEL,
+				max_tokens=GPT_MAX_TOKENS,
+				prompt = "Hey I'm ready to roll!",
+				role=ROLE_ANSWER if ROLE_ANSWER else "You are a sophisticated LLM that assumes the user has a default bassic knowledge about all topics and treat them as a peer in a conversational and colloquial manner",
+				context="",
+				max_context_tokens=GPT_MAX_CONTEXT_TOKENS,
 				context_file_names=None
 		):
 		self._api_key = api_key if api_key else os.getenv('OPENAI_API_KEY')
@@ -22,10 +31,10 @@ class GPTClient:
 		self._max_tokens = max_tokens
 		self._max_context_tokens = max_context_tokens
 		self._prompt = prompt
-		self._context = role + context
+		self._role = role
+		self._context = context
 		self.client = OpenAI(api_key=self._api_key)
 		self.last_response = None  # Initialize last response attribute
-		self._role = role
 		self._context_file_names = context_file_names if context_file_names else []  # Initialize an empty list to store filenames
 
 		if not self._api_key:
@@ -124,9 +133,9 @@ class GPTClient:
 
 		full_prompt = f"""
   {self.role}\n
-  Here is the background context of the current chat and relevant topics:\n{self._context}\n[END CONTEXT]\n
+  Here is the background context of the current chat and relevant topics:\n{self.context}\n[END CONTEXT]\n
   And here is the prompt:\n{prompt}"""  # Context first, then the prompt
-  
+
 		response = self.client.chat.completions.create(
 			model=self._model,
 			messages=[{"role": "user", "content": full_prompt}],
@@ -145,21 +154,36 @@ class GPTClient:
 		# Check if we have hit the max allocated tokens before resummarizing the context
 		if current_tokens > max_context_tokens:
 			self.context = self.summarize_context(self.context, max_context_tokens)
-   
-	def send_prompt_for_RAG(self, new_content, user_prompt=None):
-		"""Send a prompt to the GPT model. Use the currently assigned prompt if none is provided."""
+
+	def send_prompt_for_RAG(self, new_content, user_prompt=None, context_token_limit=5000):
+		"""Send a prompt to GPT with truncated context, using token count."""
 		if user_prompt is None:
-			user_prompt = self.prompt  # Use the instance's prompt if none provided
+			user_prompt = self.prompt
+
+		# Tokenize context and truncate to last `context_token_limit` tokens
+		encoding = tiktoken.encoding_for_model(self.model)
+		context_tokens = encoding.encode(self.context)
+		truncated_tokens = context_tokens[-context_token_limit:]
+		truncated_context = encoding.decode(truncated_tokens)
 
 		full_prompt = f"""
-	{self.role}\n
-	Here is the context of the chat:\n{self.context}\n[END CHAT CONTEXT]\n
-	Here is what was retrieved from the RAG implementation: {new_content}\n\n [END RAG-RETRIEVED CONTENT] \n\n 
-	Here is the user's current prompt:\n{user_prompt}\n[END CURRENT PROMPT]\n
-	Please return just a summary of the RAG-RETRIEVED CONTENT, a robust and comprehensive one, of what you think relevant to the chat given the context. Remember that some of the RAG results may be out of scope, but also note the chronology and relevant characters and tags if they relate to the prompt and context.
-	Note that this will be added to the context, so don't add in anything about what the prompt and context are saying are currently happening - just give a relevant summary from what was RAG-RETRIEVED.
-	"""
-  
+			{self.role}
+
+			Here is the context of the chat:
+			{truncated_context}
+			[END CHAT CONTEXT]
+
+			Here is what was retrieved from the RAG implementation:
+			{new_content}
+			[END RAG-RETRIEVED CONTENT]
+
+			Here is the user's current prompt:
+			{user_prompt}
+			[END CURRENT PROMPT]
+
+			Please return just a summary of the RAG-RETRIEVED CONTENT, a robust and comprehensive one, of what you think relevant to the chat given the context. Remember that some of the RAG results may be out of scope, but also note the chronology and relevant characters and tags if they relate to the prompt and context. Note that this will be added to the context, so don't add in anything about what the prompt and context are saying are currently happening - just give a relevant summary from what was RAG-RETRIEVED.
+		"""
+
 		response = self.client.chat.completions.create(
 			model=self._model,
 			messages=[{"role": "user", "content": full_prompt}],
@@ -169,16 +193,21 @@ class GPTClient:
 
 		return self.extract_text(response)
 
+
+
 	def update_context_with_rag(self, query):
 		# Query via FAISS and then the ES instance for context from the prompt
 		faiss_results = test_elasticsearch_and_faiss_query_line.query_faiss(query)
 		document_data = test_elasticsearch_and_faiss_query_line.retrieve_documents_from_elasticsearch(faiss_results, query)
+  
+
 		new_content = ""
 		# Initialize GPTClient
 		rag_check_object = GPTClient(role="""
-			A user is interacting with GPT via API calls, and they have implemented a RAG system to retrieve context on top of the existing chat history.  
+			A user is interacting with GPT via API calls, and they have implemented a RAG system to retrieve context on top of the existing chat history.
 			Please look at the returned summaries from the RAG query and return the most relevant and robust summary that contains what you take to be relevant to the current converation above it and the user's current prompt.
 			Be sure to make an effort to prioritize giving details about characters that aren't currently in context as summaries of who they are and what their roles in general are followed by then talking about their dynamics in the current context.
+			Do not mention any real countries or places in the 'real world'.  Never say 'Silicon Concubines' - always abbreviate to 'SC' or 'SCs'.
 			""",
 			max_tokens=5000,
 			context = self.context,
@@ -188,9 +217,13 @@ class GPTClient:
 		for docinfo in document_data:
 			filename = docinfo["filename"]
 			doc = docinfo["summary"]
+			# CURRENTLY commented out since this can ssometimes still be useful if a user prompt later has a different intent.  Keeping the code here commented-out in case we want to revisit it with
+   			# smarter logic later
+	  
 			# if filename in self.context_file_names:
 			# 	logging.info(f"Context for filename ({filename}) already included, skipping...")
 			# 	continue
+   
 			# Construct a detailed string of all key-value pairs in the document
 			print("DEBUG: doc =", doc, "Type:", type(doc), flush=True)
 			if isinstance(doc, str):
@@ -203,16 +236,16 @@ class GPTClient:
 
 			new_content_summary = rag_check_object.send_prompt_for_RAG(doc, query)
 			logging.info(f"\n\nSummarized version: {new_content_summary}")
-			
+
 			new_content += new_content_summary
 			self.context_file_names.append(filename)
 			# Summarize iteratively if we hit the context threshold while adding the returned summaries
 			if self.count_tokens(self.context) + self.count_tokens(new_content) > self.max_context_tokens:
-				logging.info("Summarizing context...")
-				self.context = self.summarize_context(self.context)
-		
-		logging.info(f"\n\n{'-'*20}\nSummary of retrieved documents from GPT:\n\n\n{new_content}\n{'-'*20}\n\n")
-		self.context += new_content
+				logging.info("\n\nSummarizing context...\n\n")
+				self.context = self.summarize_context()
+
+		logging.info(f"\n\n{'-'*20}\nSummary of retrieved documents from ElasticSearch:\n\n\n{new_content}\n{'-'*20}\n\n")
+		self.context += f"\n\n{'-'*20}\n[SUMMARY OF RETRIEVED LORE DOCUMENTS]:\n{new_content}\n[END SUMMARY OF RETRIEVED LORE DOCUMENTS]{'-'*20}\n\n"
 		return new_content
 
 	def extract_text(self, response):
@@ -233,16 +266,15 @@ class GPTClient:
 		# Return the number of tokens
 		return len(tokens)
 
-	def summarize_context(self, max_tokens=None):
+	def summarize_context(self, max_tokens=7500):
 		# Implement context summarization logic here
 			logging.info("Context exceeds maximum token threshold. Summarizing...")
 			context_prompt = f"""
-				Given the following conversation context, provide a comprehensive summary that encapsulates the key themes, insights, conclusions, 
-				and any pivotal nuances necessary for sustaining context-aware dialogue continuation. Ensure the summary serves as a robust replacement for the entire text, 
-				maintaining coherence and relevance for subsequent interactions: {self.context}"""
+				Given the following conversation context, provide a comprehensive summary that encapsulates the key themes, insights, conclusions,
+				and any pivotal nuances necessary for sustaining context-aware dialogue continuation. Ensure the summary serves as a robust replacement for the entire text,
+				maintaining coherence and relevance for subsequent interactions:\n {self.context}"""
 			try:
 				logging.info("Context exceeds maximum token threshold. Summarizing...")
-				context_prompt = f"Given the following conversation context, provide a comprehensive summary: {self._context}"
 				response = self.client.chat.completions.create(
 					model=self._model,
 					messages=[{"role": "user", "content": context_prompt}],
@@ -252,9 +284,12 @@ class GPTClient:
 				context_summary = self.extract_text(response)
 
 				if context_summary:
-					self.context = context_summary  # Reset context to the summarized content
+					# Reset context to the summarized content
+					self.clear_context()  # Clear the context before adding the summary
+					self.context += context_summary
 					self.context_file_names = [] # Reset the file names being counted as in the summary
 					logging.info(f"{'-'*40}\n\nSummarized Context:\n{context_summary}\n{'-'*40}\n\n")
+					self.context = f"[RELEVANT INFORMATION FROM SUMMARIZED CONVERSATION HISTORY]:\n{self.context}\n[END RELEVANT INFORMATION FROM SUMMARIZED CONVERSATION HISTORY]\n"
 				else:
 					logging.error("Failed to summarize context or received an empty summary.")
 			except Exception as e:
@@ -263,8 +298,9 @@ class GPTClient:
 				self.context = "Failed to summarize context; starting fresh."
 
 	def clear_context(self):
-		self.context = ""
-  
+		self.context = f"{self.role}\n"
+
+
 	def store_retrieved_documents(self, filename):
 		if filename not in self.context_file_names:
 			self.context_file_names.append(filename)
