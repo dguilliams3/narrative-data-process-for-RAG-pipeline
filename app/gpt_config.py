@@ -10,6 +10,12 @@ if not dotenv_path.is_file():
 print(f"Pulling environment variables from {dotenv_path} ...")
 load_dotenv(dotenv_path)
 
+# Initialize logging
+# 🛡️ Change these to your desired credentials
+LOG_USERNAME = os.getenv("LOG_USERNAME", "admin")
+LOG_PASSWORD = os.getenv("LOG_PASSWORD", "password")
+LOG_FILE_PATH = os.getenv("LOG_FILE_PATH","./logs/context_log.log")
+
 # Now your environment variables, including OPENAI_API_KEY, will be loaded.
 GPT_MODEL = os.getenv("GPT_MODEL", "gpt-4o")
 GPT_MAX_TOKENS = int(os.getenv("GPT_MAX_TOKENS", 6000))

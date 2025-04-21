@@ -6,7 +6,7 @@ import os
 import test_elasticsearch_and_faiss_query_line
 
 # Initialize logging
-LOG_FILE_PATH = "./context_log.log"
+LOG_FILE_PATH = "./logs/context_log.log"
 ensure_log_dir(LOG_FILE_PATH)
 configure_logging(LOG_FILE_PATH)
 logging.info("Logging initialized")
@@ -126,25 +126,37 @@ class GPTClient:
 
 
 	def send_prompt(self, prompt=None):
-		"""Send a prompt to the GPT model. Use the currently assigned prompt if none is provided."""
+		"""Send a prompt to the GPT model with retry logic."""
 		if prompt is None:
 			prompt = self._prompt  # Use the instance's prompt if none provided
 			self.prompt = prompt
 
 		full_prompt = f"""
-  {self.role}\n
-  Here is the background context of the current chat and relevant topics:\n{self.context}\n[END CONTEXT]\n
-  And here is the prompt:\n{prompt}"""  # Context first, then the prompt
+	{self.role}\n
+	Here is the background context of the current chat and relevant topics:\n{self.context}\n[END CONTEXT]\n
+	And here is the prompt:\n{prompt}"""
+	
+		max_retries = 3
+		for attempt in range(1, max_retries + 1):
+			try:
+				response = self.client.chat.completions.create(
+					model=self._model,
+					messages=[{"role": "user", "content": full_prompt}],
+					max_tokens=self._max_tokens,
+					temperature=0.7,
+				)
+				logging.info(f"API call succeeded on attempt {attempt}")
+				break  # Exit loop if successful
+			except Exception as e:
+				logging.error(f"API call failed on attempt {attempt}: {e}")
+				if attempt == max_retries:
+					raise e  # Reraise error after final attempt
+				else:
+					import time
+					time.sleep(2)  # Wait before retrying
 
-		response = self.client.chat.completions.create(
-			model=self._model,
-			messages=[{"role": "user", "content": full_prompt}],
-			max_tokens=self._max_tokens,
-			temperature=0.7,
-		)
-		logging.info(f"\n\n{'-'*80}\nSENT:\n\n{full_prompt}{'-'*80}\n\n")
 		self.last_response = response  # Store the last response
-		self.update_context_after_response(prompt, response.choices[0].message.content) # Update the context
+		self.update_context_after_response(prompt, response.choices[0].message.content)  # Update the context
 		return response
 
 	def update_context_after_response(self, user_input, response_text, max_context_tokens=GPT_MAX_CONTEXT_TOKENS):
@@ -298,8 +310,7 @@ class GPTClient:
 				self.context = "Failed to summarize context; starting fresh."
 
 	def clear_context(self):
-		self.context = f"{self.role}\n"
-
+		self.context = f"Here is your role for this conversation:\n{ROLE_ANSWER}\n[END ROLE DESCRIPTION]\n"
 
 	def store_retrieved_documents(self, filename):
 		if filename not in self.context_file_names:
