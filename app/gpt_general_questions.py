@@ -1,143 +1,109 @@
-from flask import Flask, request, Response, jsonify, session, render_template_string
-from GPTClient import *
-from gpt_config import *
-from logging_utils import *
 import os
 import sys
-from gpt_config import *
-from sanitize_output import sanitize_text
+import logging
+from flask import Flask, request, Response, jsonify, session, render_template_string
+from flask_swagger_ui import get_swaggerui_blueprint
 from functools import wraps
 
-# Add current directory to Python path
+# ensure current dir is on path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-# Initialize Flask
-app = Flask(__name__)
-app.secret_key = "your_secret_key"  # Required for session to work
+from GPTClient import GPTClient
+from gpt_config import *
+from logging_utils import configure_logging, ensure_log_dir
+from sanitize_output import sanitize_text
+from chunk_manager import ChunkManager
 
-# Initialize logging
-LOG_FILE_PATH = "./logs/context_log.log"
+# --- Logging setup ---
 ensure_log_dir(LOG_FILE_PATH)
 configure_logging(LOG_FILE_PATH)
-logging.info("Logging initialized")
+logger = logging.getLogger(__name__)
+logger.info("Starting Flask app")
 
-def check_auth(username, password):
-    return username == LOG_USERNAME and password == LOG_PASSWORD
+# --- Flask/app-level settings ---
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "default-flask-key")
+
+def check_auth(u, p):
+    return u == LOG_USERNAME and p == LOG_PASSWORD
 
 def authenticate():
-    return Response(
-        "Authentication required", 401,
-        {"WWW-Authenticate": 'Basic realm="Login Required"'}
-    )
+    return Response("Auth required", 401, {"WWW-Authenticate": 'Basic realm="Login Required"'})
 
 def requires_auth(f):
     @wraps(f)
-    def decorated(*args, **kwargs):
+    def wrapper(*a, **k):
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
             return authenticate()
-        return f(*args, **kwargs)
-    return decorated
+        return f(*a, **k)
+    return wrapper
 
-# Initialize GPTClient
-gpt_client = GPTClient()
-gpt_client.role = f"Here is your role for this conversation:\n{ROLE_ANSWER}\n[END ROLE DESCRIPTION]\n"
+# instantiate client
+client = GPTClient()
+client.role = f"System Role:\n{ROLE_ANSWER}[END ROLE]\n"
 
-# Global flag; note: this global is separate from session "rag_status"
-rag_status = True
+# RAG toggle default
+DEFAULT_RAG = True
 
-# Replace FAISS_INDEX_PATH with FAISS_FILE_NAME
-FAISS_FILE_NAME = "faiss_index.bin"
-FAISS_INDEX_PATH = os.path.join(current_dir, FAISS_FILE_NAME)
+@app.route("/ask", methods=["POST"])
+def ask():
+    data = request.json or {}
+    user_input = data.get("user_input", "").strip()
+    if not user_input:
+        return jsonify({"response": "No input received"}), 400
 
-if not os.path.exists(FAISS_INDEX_PATH):
-    print("No FAISS index found, please check for file!")
-    raise FileNotFoundError("No FAISS index found, please check for file!")
-else:
-    print("Loading existing FAISS index...")
+    # RAG toggle in session
+    if "rag_status" not in session:
+        session["rag_status"] = DEFAULT_RAG
 
-@app.route("/metrics", methods=["GET"])
-def metrics():
-    metrics_data = {
-        "current_context_token_count": gpt_client.count_tokens(gpt_client.context),
-        "current_context_length": len(gpt_client.context)
-    }
-    return jsonify(metrics_data), 200
+    # special commands
+    if user_input.lower() == "reset":
+        client.chunker = ChunkManager(client.model, client.max_context_tokens, client)  # reset chunker
+        return jsonify({"response": "Context cleared."})
+    if user_input.lower() == "context":
+        return jsonify({"response": f"CURRENT CONTEXT:\n\n{client.role}\n{client.chunker.get_context()}"})
+    if user_input.lower() == "rag":
+        session["rag_status"] = not session["rag_status"]
+        return jsonify({"response": f"RAG now {'ON' if session['rag_status'] else 'OFF'}"})
+
+    # maybe inject RAG
+    if session.get("rag_status"):
+        client.update_context_with_rag(user_input)
+
+    # send to GPT
+    resp = client.send_prompt(user_input)
+    text = client.extract_text(resp)
+    safe = sanitize_text(text)
+    logger.info("Final answer: %s", safe)
+    return jsonify({"response": safe})
 
 @app.route("/logs", methods=["GET"])
 @requires_auth
 def view_logs():
-    log_path = LOG_FILE_PATH
-    if not os.path.exists(log_path):
-        return "Log file not found.", 404
-    with open(log_path, "r", encoding="utf-8") as f:
+    with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
         return "<pre>" + f.read() + "</pre>"
 
-@app.route("/ask", methods=["POST"])
-def ask():
-    if "rag_status" not in session:
-        session["rag_status"] = False  # Initialize RAG status in session
-
-    user_input = request.json.get("user_input")
-    if not user_input:
-        return jsonify({"response": "Error: No input received."}), 400
-
-    logging.info(f"Received request with user_input: {user_input}")
-
-    if user_input.lower() == "reset":
-        gpt_client.clear_context()
-        return jsonify({"response": "Conversation context cleared. How can I assist you?"})
-    elif user_input.lower().strip() == "context":
-        full_context = f"{gpt_client.role}\n\n{gpt_client.context}"
-        return jsonify({"response": full_context})
-    elif user_input.lower() == "rag":
-        session["rag_status"] = not session["rag_status"]  # Toggle RAG status
-        return jsonify({"response": f"Toggling RAG to {session['rag_status']}"})
-
-    gpt_client.prompt = user_input
-
-    # Use the session value for rag_status in case it differs from the global flag
-    if session.get("rag_status", False):
-        gpt_client.update_context_with_rag(user_input)
-
-    # Step 1: Send prompt and get the full response object
-    response = gpt_client.send_prompt()
-
-    # Step 2: Log raw response object BEFORE extraction
-    logging.info(f"\n\n[RAW OPENAI RESPONSE OBJECT]:\n{repr(response)}\n\n")
-
-    # Step 3: Extract message content
-    response_text = gpt_client.extract_text(response)
-    if not response_text:
-        response_text = "[Error: No content returned]"
-
-    # Step 4: Log extracted text before sanitization
-    logging.info(f"\n\n[EXTRACTED TEXT PRE-SANITIZATION]:\n{repr(response_text)}\n\n")
-
-    # Step 5: Sanitize the text
-    try:
-        response_text = sanitize_text(response_text)
-    except Exception as e:
-        logging.exception("Error during sanitize_text")
-        response_text = "[Error: sanitize_text failed]"
-
-    # Step 6: Final log
-    logging.info(f"\n\n[FINAL SANITIZED TEXT]:\n{repr(response_text)}\n\n")
-    logging.info(f"\n{'-'*40}[CONTEXT]{'-'*40}\n")
-    logging.info(f"\n{gpt_client.context}\n")
-    logging.info(f"\n{'-'*38}[END CONTEXT]{'-'*38}\n")
-    logging.info(f"\n\nRETURNED RESPONSE:\n\n{response_text}")
-
-    # Step 7: Return to frontend
-    return jsonify({"response": response_text})
-
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
     return "OK", 200
 
-@app.route("/", methods=["GET"])
+from flask import jsonify
+
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    # grab the current conversation context from the chunk manager
+    ctx = client.chunker.get_context()
+    return jsonify({
+        # how many tokens in that context
+        "current_context_token_count": client.count_tokens(ctx),
+        # and how long the raw string is
+        "current_context_length": len(ctx)
+    }), 200
+
+@app.route("/")
 def index():
     html = render_template_string("""
     <!DOCTYPE html>
@@ -295,4 +261,4 @@ def index():
     return html
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)), debug=True)
