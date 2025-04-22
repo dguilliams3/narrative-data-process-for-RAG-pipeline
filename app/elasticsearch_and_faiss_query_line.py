@@ -59,7 +59,7 @@ with open(find_file("index_to_filename.json"), "r", encoding="utf-8") as f:
 	logging.info("Loaded index_to_filename mapping from location {index_to_filename}")
 
 # Function to query FAISS and return document paths
-def query_faiss(query, top_k=3):
+def query_faiss(query, top_k=FAISS_TOP_K):
 	# Step 1: Encode the query into an embedding
 	query_embedding = model.encode([query])
 	logging.info(f"Query embedding shape: {query_embedding.shape}")
@@ -120,7 +120,7 @@ def retrieve_documents_from_elasticsearch(faiss_docs, prompt):
                     "minimum_should_match": 1
                 }
             },
-            "size": 10
+            "size": ES_NUMBER_DOCS  # Adjust size as needed
         }
     
     logging.info(f"Elasticsearch query:\n{es_query}\n" + "-" * 20)
@@ -135,6 +135,7 @@ def retrieve_documents_from_elasticsearch(faiss_docs, prompt):
                 'filename': source.get('filename', 'Unknown'),
                 'summary': source.get('summary', 'No summary available')
             })
+            logging.info("Returned document from Elasticsearch: %s", documents[-1]['summary'][:1000])
         return documents
     except Exception as e:
         logging.info("Error retrieving documents from Elasticsearch: %s", e)

@@ -1,5 +1,6 @@
 # Core app
 flask
+flask_swagger_ui
 python-dotenv
 requests
 elasticsearch==8.11.1
