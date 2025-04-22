@@ -424,7 +424,7 @@ Transform GPT-4o into a context-aware reasoning assistant capable of answering n
 | **Seed** | 1190716480 |
 | **Validation** | None (focused on complete set ingestion) |
 
-![Fine-tuning Loss Curve](attachment:image.png)  
+![Fine-tuning Loss Curve](attachment:screenshot_gpt_fine_tuning_graph.png)  
 _Training loss showed a consistent downward trend, stabilizing near 1.2._
 
 ---
