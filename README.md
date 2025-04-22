@@ -424,7 +424,7 @@ Transform GPT-4o into a context-aware reasoning assistant capable of answering n
 | **Seed** | 1190716480 |
 | **Validation** | None (focused on complete set ingestion) |
 
-![Fine-tuning Loss Curve](attachment:screenshot_gpt_fine_tuning_graph.png)  
+![Fine-tuning Loss Curve](images/screenshot_gpt_fine_tuning_graph.png)  
 _Training loss showed a consistent downward trend, stabilizing near 1.2._
 
 ---
@@ -559,7 +559,7 @@ This precision made it ideal as a **query parsing or mid-tier summarization agen
 
 ## 🧪 SECTION 6: Runtime Pipeline Execution and Dialogue Flow
 
-With the fine-tuned GPT-4o model (`ft:gpt-4o-2024-08-06:personal:soleria:ARq2SEpI`) and enriched Elasticsearch/FAISS indexes now live, the production RAG system orchestrates a continuous, context-aware, multi-agent inference pipeline.
+With the fine-tuned GPT-4o model (`ft:gpt-4o-2024-08-06:personal:soleria:...`) and enriched Elasticsearch/FAISS indexes now live, the production RAG system orchestrates a continuous, context-aware, multi-agent inference pipeline.
 
 This pipeline is encapsulated in an object-oriented `GPTClient` interface, which maintains chat history, controls token budgets, and supervises context rotation and summarization.
 
@@ -667,6 +667,7 @@ response = self.client.chat.completions.create(
     messages=[{"role": "user", "content": full_prompt}]
 )
 ```
+> **Note:** *Model-toggling (including Anthropic models) is in the pipeline for future releases*
 
 This response is stored in:
 
