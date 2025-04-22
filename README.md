@@ -7,22 +7,34 @@
 
 ## 🧭 Overview
 
-This project implements a highly structured **Retrieval-Augmented Generation (RAG)** pipeline, tailored for processing and enriching a vast corpus of narrative (lore) documents into a **context-aware, semantically indexed AI assistant**. The architecture reflects best practices in **data engineering, NLP pipeline design, and hybrid human-AI knowledge encoding**.
+This project implements a highly structured, **config‑driven** Retrieval‑Augmented Generation (RAG) pipeline, blending vector search, fine‑tuned summarization, and token‑aware memory management to power a context‑rich, multi‑turn AI assistant for a large narrative corpus.
+
+Key enhancements since our initial whitepaper:
+- **Chunked Memory Management:**  
+  A dedicated `ChunkManager` module breaks conversation into numbered “chunks,” automatically summarizing the oldest ones to stay within the `GPT_MAX_CONTEXT_TOKENS` budget.  
+- **Fine‑Tuned RAG Summaries:**  
+  Retrieved document summaries are passed through a custom fine‑tuned GPT model (`GPT_FINE_TUNED_MODEL`), which compresses and filters lore based on the last `FINE_TUNED_PREVIOUS_CHUNKS` of chat history.  
+- **Configurable Retrieval:**  
+  FAISS top‑K (`FAISS_TOP_K`), RAG context chunk count (`RAG_SUMMARY_CONTEXT_CHUNKS`), and fine‑tuned chunk window (`FINE_TUNED_PREVIOUS_CHUNKS`) are all environment‑driven for easy tuning.  
+- **Interactive Flask API:**  
+  The `/ask` endpoint supports in‑session toggling of RAG, context logging, and full reset of memory, plus Swagger UI documentation.
 
 ---
 
 ## 🚀 Executive Summary: Key Technologies and Impact
 
-- **GPT-4o Fine-Tuning & Multi-Agent RAG**: Fine-tuned GPT-4o on 981 curated QA pairs to act as a mid-tier reasoning module within a multi-agent Retrieval-Augmented Generation system.
-
-- **Semantic Search Stack**: Combined **FAISS vector indexing** (MiniLM) with **Elasticsearch** (NER, metadata, topic models via BERTopic) for hybrid search and dynamic document retrieval.
-
-- **Context-Aware Dialogue Memory**: Engineered a custom `GPTClient` class to manage long-form interaction, token-aware summarization, and recursive memory rotation across sessions.
-
+- **ChunkManager for Token‑Safe Memory:**  
+  Ensures long conversations never exceed model limits by summarizing old chunks on‑the‑fly.  
+- **Fine‑Tuned Summarization Agent:**  
+  A separate GPT client calls `GPT_FINE_TUNED_MODEL` to distill raw Elasticsearch summaries into relevance‑weighted context.  
+- **Hybrid Retrieval Stack:**  
+  FAISS (MiniLM embeddings) + Elasticsearch (KeyBERT / filename fallback) for fast, semantic retrieval.  
+- **Environment‑Driven Configuration:**  
+  All major knobs (model IDs, token budgets, retrieval counts) are controlled in `.env` and surfaced in `gpt_config.py`.  
+- **Feature‑Rich API:**  
+  Flask with session‑level RAG toggle, developer testing commands, and Swagger UI for exploration.  
 - **Full NLP Enrichment Pipeline**: Deployed **facebook/bart-large-cnn** (a BART-based abstractive summarizer), **spaCy NER**, **BERTopic**, and **keyword clustering** to produce semantically enriched, chronologically indexed lore summaries.
-
 - **Hands-On LLM Orchestration**: Used OpenAI’s API directly for both fine-tuning and runtime interaction. Incorporated structured prompt design, dynamic role conditioning, and functionally distinct GPT agents.
-
 - **Containerized Deployment via Docker Compose**: Packaged the full stack—including FAISS, Elasticsearch, and Flask-based RAG API—into a Docker Compose environment for reproducible, isolated deployment. Supports volume mounting, service configuration, and runtime orchestration.
 
 > Built as a hybrid between **data engineering**, **information retrieval**, and **generative AI orchestration**—this pipeline showcases end-to-end model interaction with full traceability and introspection.
@@ -82,6 +94,20 @@ Each core stage of the pipeline is managed by modular Python scripts. These are 
   - `enrich_narrative_data_with_roles_dependencies_and_keywords_by_file_path.py`
 - **Fine-Tuning Prep:**
   - Config files, prompt schemas, and JSON-normalized QA datasets
+
+- **Pipeline Scripts**
+  - **`chunk_manager.py`**  
+    Rolling context chunks + auto‑summarization.  
+  - **`GPTClient.py`**  
+    Orchestrates retrieval, fine‑tuned summarization, and base dialogue calls.  
+  - **`elasticsearch_and_faiss_query_line.py`**  
+    - FAISS + Elasticsearch retrieval logic.  
+  - **`gpt_general_questions.py`**  
+    - Flask API, RAG toggle, Swagger UI.  
+  - **`gpt_config.py`**  
+    - All environment‑driven settings (model IDs, token budgets, RAG/FAISS parameters).  
+  - **`logging_utils.py`**, **`sanitize_output.py`**  
+    - Standardized logging & output cleanup.
 
 ---
 

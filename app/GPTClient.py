@@ -1,270 +1,206 @@
 from openai import OpenAI
 import tiktoken
-from gpt_config import *
-from logging_utils import *
+import logging
 import os
-import test_elasticsearch_and_faiss_query_line
+import elasticsearch_and_faiss_query_line
+from gpt_config import *
+from chunk_manager import ChunkManager
+
+# Initialize logging
+ensure_log_dir(LOG_FILE_PATH)
+configure_logging(LOG_FILE_PATH)
+logger = logging.getLogger(__name__)
 
 class GPTClient:
-	def __init__(
-				self, 
-				api_key=None, 
-				model=GPT_MODEL, 
-				max_tokens=GPT_MAX_TOKENS, 
-				prompt = "Hey I'm ready to roll!", 
-				role="You are a sophisticated LLM that assumes the user has a default bassic knowledge about all topics and treat them as a peer in a conversational and colloquial manner", 
-				context="", 
-				max_context_tokens=GPT_MAX_CONTEXT_TOKENS, 
-				context_file_names=None
-		):
-		self._api_key = api_key if api_key else os.getenv('OPENAI_API_KEY')
-		self._model = model
-		self._max_tokens = max_tokens
-		self._max_context_tokens = max_context_tokens
-		self._prompt = prompt
-		self._context = role + context
-		self.client = OpenAI(api_key=self._api_key)
-		self.last_response = None  # Initialize last response attribute
-		self._role = role
-		self._context_file_names = context_file_names if context_file_names else []  # Initialize an empty list to store filenames
+    def __init__(
+        self,
+        api_key=None,
+        model=GPT_MODEL,
+        max_tokens=GPT_MAX_TOKENS,
+        temperature=GPT_TEMPERATURE,
+        role=ROLE_ANSWER,
+        max_context_tokens=GPT_MAX_CONTEXT_TOKENS
+    ):
+        # API + model settings
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY not set")
+        self.client = OpenAI(api_key=self.api_key)
 
-		if not self._api_key:
-			logging.error("API Key not found. Ensure it's set in the environment variables.")
-			raise ValueError("API Key not found. Ensure it's set in the environment variables.")
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.role = role
 
-	@property
-	def api_key(self):
-		return self._api_key
+        # RAG & chunk manager
+        self.max_context_tokens = max_context_tokens
+        # Use a separate GPTClient instance for summarization, to avoid recursion
+        self.summarizer = OpenAI(api_key=self.api_key)
+        self.chunker = ChunkManager(
+            tokenizer_model=self.model,
+            max_total_tokens=self.max_context_tokens,
+            summarizer_client=self
+        )
 
-	@api_key.setter
-	def api_key(self, value):
-		self._api_key = value
-		self.client = OpenAI(api_key=self._api_key)  # Update the client if the API key changes
-		logging.info("API Key updated.")
+    def count_tokens(self, text: str) -> int:
+        enc = tiktoken.encoding_for_model(self.model)
+        return len(enc.encode(text))
 
-	@property
-	def model(self):
-		return self._model
+    def summarize_text(self, text: str, max_tokens: int=GPT_SUMMARIZER_MAX_TOKENS, role=GPT_SUMMARIZER_ROLE, temperature=GPT_SUMMARIZER_TEMPERATURE) -> str:
+        """
+        Utility to summarize arbitrary text via GPT.
+        """
+        prompt = (
+            f"""[ROLE]
+            {role}
+            [END ROLE]
+            [TEXT-TO-SUMMARIZE]
+            f"{text}
+            [END TEXT-TO-SUMMARIZE]
+            """
+        )
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        return resp.choices[0].message.content
 
-	@model.setter
-	def model(self, value=""):
-		self._model = value
-		logging.info(f"Model set to {value}")
+    def send_prompt(self, user_prompt: str):
+        """
+        Main user-facing call. Appends prompt to chunker,
+        constructs full prompt, calls API, adds assistant reply
+        back into chunker.
+        """
+        # Step 1: add user message
+        self.chunker.add_message("User", f"{user_prompt}\n[END USER PROMPT]")
 
-	@property
-	def role(self):
-		return self._role
+        # Step 2: assemble full prompt
+        full_prompt = (
+            f"""[ROLE]
+            {self.role}
+            [END ROLE]
+            [CONVERSATION CONTEXT AND HISTORY]
+            Here is the conversation so far.
+            **NOTE: The user's most recent prompt is at the very end of this context.**:
+            {self.chunker.get_context()}
+            [END CONVERSATION CONTEXT AND HISTORY]
+            Now, please reply to the user's most recent message.
+            """
+        )
 
-	@role.setter
-	def role(self, value):
-		self._role = value
-		logging.info(f"Role set to {value}")
+        # Step 3: call OpenAI
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": full_prompt}],
+            max_tokens=self.max_tokens,
+            temperature=self.temperature
+        )
 
-	@property
-	def max_tokens(self):
-		return self._max_tokens
+        assistant_reply = resp.choices[0].message.content
+        logging.info("Assistant reply: %s", assistant_reply)
 
-	@max_tokens.setter
-	def max_tokens(self, value):
-		if value > 0:
-			self._max_tokens = value
-		else:
-			raise ValueError("Max tokens must be a positive integer")
+        # Step 4: add assistant reply to chunker
+        self.chunker.add_message("GPT", assistant_reply)
 
-	@property
-	def max_context_tokens(self):
-		return self._max_context_tokens
+        return resp
 
-	@max_context_tokens.setter
-	def max_context_tokens(self, value):
-		if value > 0:
-			self._max_context_tokens = value
-		else:
-			raise ValueError("Max context tokens must be a positive integer")
+    def extract_text(self, response) -> str:
+        try:
+            return response.choices[0].message.content
+        except Exception:
+            logger.exception("Failed to extract response text")
+            return ""
 
-	@property
-	def prompt(self):
-		return self._prompt
+    def summarize_with_fine_tuned_gpt(
+            self,
+            raw: str,
+            query:str = "",
+            max_tokens: int =GPT_FINE_TUNED_MAX_TOKENS,
+            prev_chunks: int = FINE_TUNED_PREVIOUS_CHUNKS,
+            temperature: float = GPT_FINE_TUNED_TEMPERATURE
+        ) -> str:
+        """
+        Summarize the retrieved documents with the fine‑tuned model,
+        including up to `prev_chunks` of the most recent conversation history.
+        """
+        # 1) grab the last N chunks of user+assistant messages
+        # EXPLANATION: slicing a Python list handles "too many" gracefully
+        all_chunks   = self.chunker.chunks
+        selected     = all_chunks[-prev_chunks:]
+        convo_history = "\n".join(selected)
 
-	@prompt.setter
-	def prompt(self, value):
-		if isinstance(value, str):
-			self._prompt = value
-		else:
-			raise ValueError("Prompt must be a string")
+        # 2) build the inline‑role prompt
+        prompt = f"""
+[ROLE]
+{FINE_TUNED_ROLE}
+[END ROLE]
 
-	@property
-	def context(self):
-		return self._context
+[CONVERSATION HISTORY (last {len(selected)} chunks)]
+{convo_history}
+[END CONVERSATION HISTORY]
 
-	@context.setter
-	def context(self, value):
-		if isinstance(value, str):
-			self._context = value
-		else:
-			raise ValueError("Context must be a string")
+[RETRIEVED DOCUMENTS]
+{raw}
+[END RETRIEVED DOCUMENTS]
 
-	@property
-	def context_file_names(self):
-		return self._context_file_names
+[CURRENT PROMPT]
+{query}
+[END CURRENT PROMPT]
 
-	@context_file_names.setter
-	def context_file_names(self, value):
-		if isinstance(value, list):  # Correct type check
-			self._context_file_names = value
-		else:
-			raise ValueError("context_file_names must be a list")
+Please return just a summary of the RAG-RETRIEVED CONTENT, a robust and comprehensive one, of what you think relevant to the chat given the context. Remember that some of the RAG results may be out of scope, but also note the chronology and relevant characters and tags if they relate to the prompt and context. Note that this will be added to the context, so don't add in anything about what the prompt and context are saying are currently happening - just give a relevant summary from what was RAG-RETRIEVED.
+    """.strip()
+        logger.info("Fine‑tuned GPT prompt:\n%s", prompt)
 
+        # 3) call the fine‑tuned model
+        resp = self.summarizer.chat.completions.create(
+            model=GPT_FINE_TUNED_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
 
-	def send_prompt(self, prompt=None):
-		"""Send a prompt to the GPT model. Use the currently assigned prompt if none is provided."""
-		if prompt is None:
-			prompt = self._prompt  # Use the instance's prompt if none provided
-			self.prompt = prompt
+        # 4) extract and log the summary
+        summary = resp.choices[0].message.content.strip()
+        logger.info("Fine‑tuned GPT response:\n%s", summary)
 
-		full_prompt = f"""
-  {self.role}\n
-  Here is the background context of the current chat and relevant topics:\n{self._context}\n[END CONTEXT]\n
-  And here is the prompt:\n{prompt}"""  # Context first, then the prompt
-  
-		response = self.client.chat.completions.create(
-			model=self._model,
-			messages=[{"role": "user", "content": full_prompt}],
-			max_tokens=self._max_tokens,
-			temperature=0.7,
-		)
-		logging.info(f"\n\n{'-'*80}\nSENT:\n\n{full_prompt}{'-'*80}\n\n")
-		self.last_response = response  # Store the last response
-		self.update_context_after_response(prompt, response.choices[0].message.content) # Update the context
-		return response
+        return summary
 
-	def update_context_after_response(self, user_input, response_text, max_context_tokens=GPT_MAX_CONTEXT_TOKENS):
-		self.context += f"\nUser: {user_input}\nGPT: {response_text}"
-		current_tokens = self.count_tokens(self.context)
-		logging.info(f"Current tokens: {current_tokens}")
-		# Check if we have hit the max allocated tokens before resummarizing the context
-		if current_tokens > max_context_tokens:
-			self.context = self.summarize_context(self.context, max_context_tokens)
-   
-	def send_prompt_for_RAG(self, new_content, user_prompt=None):
-		"""Send a prompt to the GPT model. Use the currently assigned prompt if none is provided."""
-		if user_prompt is None:
-			user_prompt = self.prompt  # Use the instance's prompt if none provided
+    def update_context_with_rag(self, query: str) -> str:
+        """
+        1) FAISS -> Elastic retrieval
+        2) Combine raw docs
+        3) Summarize via fine‑tuned GPT
+        4) Inject into chunker
+        """
+        # 1) FAISS
+        paths = elasticsearch_and_faiss_query_line.query_faiss(query)
+        # 2) ES
+        docs = elasticsearch_and_faiss_query_line.retrieve_documents_from_elasticsearch(paths, query)
+        total_summaries = []
+        file_names = []
+        
+        for doc in docs:
+            filename = doc['filename']
+            text     = doc['summary']
 
-		full_prompt = f"""
-	{self.role}\n
-	Here is the context of the chat:\n{self.context}\n[END CHAT CONTEXT]\n
-	Here is what was retrieved from the RAG implementation: {new_content}\n\n [END RAG-RETRIEVED CONTENT] \n\n 
-	Here is the user's current prompt:\n{user_prompt}\n[END CURRENT PROMPT]\n
-	Please return just a summary of the RAG-RETRIEVED CONTENT, a robust and comprehensive one, of what you think relevant to the chat given the context. Remember that some of the RAG results may be out of scope, but also note the chronology and relevant characters and tags if they relate to the prompt and context.
-	Note that this will be added to the context, so don't add in anything about what the prompt and context are saying are currently happening - just give a relevant summary from what was RAG-RETRIEVED.
-	"""
-  
-		response = self.client.chat.completions.create(
-			model=self._model,
-			messages=[{"role": "user", "content": full_prompt}],
-			max_tokens=self._max_tokens,
-			temperature=0.7,
-		)
+            # 2) Summarize this one document
+            doc_summary = self.summarize_with_fine_tuned_gpt(text, query)
+            logger.info("Summary for %s:\n%s", filename, doc_summary)
+            total_summaries.append(doc_summary)
+            file_names.append(filename)
 
-		return self.extract_text(response)
+        # 3) Combine all those mini‑summaries into one big blob
+        combined_summaries = "\n\n".join(total_summaries)
 
-	def update_context_with_rag(self, query):
-		# Query via FAISS and then the ES instance for context from the prompt
-		faiss_results = test_elasticsearch_and_faiss_query_line.query_faiss(query)
-		document_data = test_elasticsearch_and_faiss_query_line.retrieve_documents_from_elasticsearch(faiss_results, query)
-		new_content = ""
-		# Initialize GPTClient
-		rag_check_object = GPTClient(role="""
-			A user is interacting with GPT via API calls, and they have implemented a RAG system to retrieve context on top of the existing chat history.  
-			Please look at the returned summaries from the RAG query and return the most relevant and robust summary that contains what you take to be relevant to the current converation above it and the user's current prompt.
-			Be sure to make an effort to prioritize giving details about characters that aren't currently in context as summaries of who they are and what their roles in general are followed by then talking about their dynamics in the current context.
-			""",
-			max_tokens=5000,
-			context = self.context,
-			model = "ft:gpt-4o-2024-08-06:personal:soleria:ARq2SEpI"
-			)
-		# Iterate through the returned filenames and summaries and add them to the context
-		for docinfo in document_data:
-			filename = docinfo["filename"]
-			doc = docinfo["summary"]
-			# if filename in self.context_file_names:
-			# 	logging.info(f"Context for filename ({filename}) already included, skipping...")
-			# 	continue
-			# Construct a detailed string of all key-value pairs in the document
-			print("DEBUG: doc =", doc, "Type:", type(doc), flush=True)
-			if isinstance(doc, str):
-				print("DEBUG: doc is a string—Expected a dictionary!")  # Debug message
-				doc = {"text": doc}  # Wrap it in a dictionary to prevent errors
+        # 4) Wrap with your RAG header/footer
+        header = "\n\n" + "-"*20 + "[RAG LORE]" + "-"*20 + "\n"
+        footer = "\n" + "-"*20 + "[END RAG LORE]" + "-"*20 + "\n\n"
 
-			doc_details = "\n".join([f"{key}: {value}" for key, value in doc.items() if key != 'filename'])  # Exclude the filename from details
-			next_line = f"\nRelated Info from File: {filename}\nInfo from file:\n{doc_details}"
-			logging.info(next_line)
+        # 5) Add as a single chunk into the chunker
+        # (This is a single chunk, so we don't need to worry about trimming)
+        self.chunker.add_message("RAG_LORE", header + combined_summaries + footer)
 
-			new_content_summary = rag_check_object.send_prompt_for_RAG(doc, query)
-			logging.info(f"\n\nSummarized version: {new_content_summary}")
-			
-			new_content += new_content_summary
-			self.context_file_names.append(filename)
-			# Summarize iteratively if we hit the context threshold while adding the returned summaries
-			if self.count_tokens(self.context) + self.count_tokens(new_content) > self.max_context_tokens:
-				logging.info("Summarizing context...")
-				self.context = self.summarize_context(self.context)
-		
-		logging.info(f"\n\n{'-'*20}\nSummary of retrieved documents from GPT:\n\n\n{new_content}\n{'-'*20}\n\n")
-		self.context += new_content
-		return new_content
-
-	def extract_text(self, response):
-		"""Extract the text from the response assuming it has attribute access."""
-		try:
-			# Access the content directly via attributes
-			return response.choices[0].message.content
-		except (AttributeError, IndexError) as e:
-			# Log the error or handle it appropriately
-			logging.error(f"Error extracting text from response: {str(e)}")
-			return None  # Return None or handle the error as needed
-
-	def count_tokens(self, text):
-		# Load the tokenizer for the specific model
-		encoding = tiktoken.encoding_for_model(self.model)
-		# Tokenize the input text
-		tokens = encoding.encode(text)
-		# Return the number of tokens
-		return len(tokens)
-
-	def summarize_context(self, max_tokens=None):
-		# Implement context summarization logic here
-			logging.info("Context exceeds maximum token threshold. Summarizing...")
-			context_prompt = f"""
-				Given the following conversation context, provide a comprehensive summary that encapsulates the key themes, insights, conclusions, 
-				and any pivotal nuances necessary for sustaining context-aware dialogue continuation. Ensure the summary serves as a robust replacement for the entire text, 
-				maintaining coherence and relevance for subsequent interactions: {self.context}"""
-			try:
-				logging.info("Context exceeds maximum token threshold. Summarizing...")
-				context_prompt = f"Given the following conversation context, provide a comprehensive summary: {self._context}"
-				response = self.client.chat.completions.create(
-					model=self._model,
-					messages=[{"role": "user", "content": context_prompt}],
-					max_tokens=max_tokens if max_tokens else self.max_context_tokens,
-					temperature=0.7,
-				)
-				context_summary = self.extract_text(response)
-
-				if context_summary:
-					self.context = context_summary  # Reset context to the summarized content
-					self.context_file_names = [] # Reset the file names being counted as in the summary
-					logging.info(f"{'-'*40}\n\nSummarized Context:\n{context_summary}\n{'-'*40}\n\n")
-				else:
-					logging.error("Failed to summarize context or received an empty summary.")
-			except Exception as e:
-				logging.error(f"Error during context summarization: {str(e)}")
-				# Handle failed summarization: perhaps revert to a default prompt or clear context
-				self.context = "Failed to summarize context; starting fresh."
-
-	def clear_context(self):
-		self.context = ""
-  
-	def store_retrieved_documents(self, filename):
-		if filename not in self.context_file_names:
-			self.context_file_names.append(filename)
+        # 6) Return the human‑readable version if you like
+        return combined_summaries, file_names

@@ -1,100 +1,199 @@
-from flask import Flask, request, jsonify, session, render_template_string
-from GPTClient import *
-from gpt_config import *
-from logging_utils import *
 import os
 import sys
-from gpt_config import *
+import logging
+from flask import Flask, request, Response, jsonify, session, render_template_string
+from flask_swagger_ui import get_swaggerui_blueprint
+from functools import wraps
 
-# Add current directory to Python path
+# ensure current dir is on path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-# Initialize Flask
-app = Flask(__name__)
-app.secret_key = "your_secret_key"  # Required for session to work
+from GPTClient import GPTClient
+from gpt_config import *
+from logging_utils import configure_logging, ensure_log_dir
+from sanitize_output import sanitize_text
+from chunk_manager import ChunkManager
 
-# Initialize logging
-LOG_FILE_PATH = "./context_log.log"
+# --- Logging setup ---
 ensure_log_dir(LOG_FILE_PATH)
 configure_logging(LOG_FILE_PATH)
-logging.info("Logging initialized")
+logger = logging.getLogger(__name__)
+logger.info("Starting Flask app")
 
-# Initialize GPTClient
-gpt_client = GPTClient(role=f"Here is your role for this conversation:\n{ROLE_ANSWER}\n[END ROLE DESCRIPTION]\n")
-rag_status = True
+# --- Flask/app-level settings ---
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "default-flask-key")
 
-# Replace FAISS_INDEX_PATH with FAISS_FILE_NAME
-FAISS_FILE_NAME = "faiss_index.bin"
-FAISS_INDEX_PATH = os.path.join(current_dir, FAISS_FILE_NAME)
+def check_auth(u, p):
+    return u == LOG_USERNAME and p == LOG_PASSWORD
 
-if not os.path.exists(FAISS_INDEX_PATH):
-		print("No FAISS index found, please check for file!")
-		raise FileNotFoundError("No FAISS index found, please check for file!")
-else:
-	print("Loading existing FAISS index...")
+def authenticate():
+    return Response("Auth required", 401, {"WWW-Authenticate": 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def wrapper(*a, **k):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*a, **k)
+    return wrapper
+
+# instantiate client
+client = GPTClient()
+client.role = f"System Role:\n{ROLE_ANSWER}[END ROLE]\n"
+
+# RAG toggle default
+DEFAULT_RAG = True
 
 @app.route("/ask", methods=["POST"])
 def ask():
-	if "rag_status" not in session:
-		session["rag_status"] = False  # Initialize RAG status in session
+    data = request.json or {}
+    user_input = data.get("user_input", "").strip()
+    if not user_input:
+        return jsonify({"response": "No input received"}), 400
 
-	user_input = request.json.get("user_input")
+    # RAG toggle in session
+    if "rag_status" not in session:
+        session["rag_status"] = DEFAULT_RAG
 
-	try:
-		role_answer = request.json.get('role_answer') # Use custom role if provided
-		gpt_client.role = role_answer
-	except:
-		role_answer = gpt_client.role
+    # special commands
+    if user_input.lower() == "reset":
+        client.chunker = ChunkManager(client.model, client.max_context_tokens, client)  # reset chunker
+        return jsonify({"response": "Context cleared."})
+    if user_input.lower() == "context":
+        return jsonify({"response": f"CURRENT CONTEXT:\n\n{client.role}\n{client.chunker.get_context()}"})
+    if user_input.lower() == "rag":
+        session["rag_status"] = not session["rag_status"]
+        return jsonify({"response": f"RAG now {'ON' if session['rag_status'] else 'OFF'}"})
 
-	logging.info(f"Received request with user_input: {user_input}")
+    # maybe inject RAG
+    if session.get("rag_status"):
+        client.update_context_with_rag(user_input)
 
-	if user_input.lower() == "reset":
-		gpt_client.clear_context()
-		return jsonify({"response": "Conversation context cleared. How can I assist you?"})
-	elif user_input.lower() == "context":
-		return jsonify({"response": gpt_client.context})
-	elif user_input.lower() == "rag":
-		session["rag_status"] = not session["rag_status"]  # Toggle RAG status
-		return jsonify({"response": f"Toggling RAG to {session['rag_status']}"})
+    # send to GPT
+    resp = client.send_prompt(user_input)
+    text = client.extract_text(resp)
+    safe = sanitize_text(text)
+    logger.info("Final answer: %s", safe)
+    return jsonify({"response": safe})
 
-	# gpt_client.role = role_answer
-	gpt_client.prompt = user_input
-	
-	if rag_status:
-		gpt_client.update_context_with_rag(user_input)
+@app.route("/logs", methods=["GET"])
+@requires_auth
+def view_logs():
+    with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
+        return "<pre>" + f.read() + "</pre>"
 
-	response = gpt_client.send_prompt()
-	response_text = gpt_client.extract_text(response)
-	# Log the current context
-	logging.info(f"\n{'-'*40}[CONTEXT]{'-'*40}\n")
-	logging.info(f"\n{gpt_client.context}\n")
-	logging.info(f"\n{'-'*38}[END CONTEXT]{'-'*38}\n")
-	logging.info(f"\n\nRETURNED RESPONSE:\n\n{response_text}")
-	return jsonify({"response": response_text})
-
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
     return "OK", 200
 
-@app.route("/", methods=["GET"])
+from flask import jsonify
+
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    # grab the current conversation context from the chunk manager
+    ctx = client.chunker.get_context()
+    return jsonify({
+        # how many tokens in that context
+        "current_context_token_count": client.count_tokens(ctx),
+        # and how long the raw string is
+        "current_context_length": len(ctx)
+    }), 200
+
+@app.route("/")
 def index():
-    # A simple HTML page that sends a question to /ask and displays the answer.
-    html = """
+    html = render_template_string("""
     <!DOCTYPE html>
     <html>
       <head>
+        <style>
+          body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: Arial, sans-serif;
+            padding: 20px;
+          }
+          h1, h2 {
+            color: #ffffff;
+          }
+          input[type="text"] {
+            background-color: #1e1e1e;
+            color: #f0f0f0;
+            border: 1px solid #333;
+            padding: 10px;
+            border-radius: 5px;
+          }
+          button {
+            background-color: #333;
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            margin-left: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+          }
+          button:hover {
+            background-color: #444;
+          }
+          pre {
+            background-color: #1e1e1e;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #333;
+          }
+          em {
+            color: #b0b0ff;
+          }
+          a {
+            color: #999;
+          }
+          footer {
+            margin-top: 50px;
+            text-align: center;
+            font-size: 0.9em;
+            color: #888;
+          }
+        </style>
         <title>GPT Chat Interface</title>
         <script>
           async function askQuestion() {
             console.log("askQuestion triggered");
 
-            const userInput = document.getElementById("userInput").value;
-            console.log("User input:", userInput);
+            const userInputElem = document.getElementById("userInput");
+            const userInput = userInputElem.value;
+            const responseElem = document.getElementById("response");
 
-            // Show a loading message immediately
-            document.getElementById("response").innerText = "Loading...";
+            // Clear previous result
+            responseElem.innerText = "";
+
+            // Step 1: Show initial loading message
+            responseElem.innerText = "Retrieving relevant lore and documents...";
+
+            // Step 2: Simulate pipeline phases with time-based updates
+            const phaseTimers = [
+              { delay: 1200, text: "Analyzing content with fine-tuned GPT" },
+              { delay: 3600, text: "Analyzing content with fine-tuned GPT." },
+              { delay: 5000, text: "Analyzing content with fine-tuned GPT.." },
+              { delay: 7400, text: "Analyzing content with fine-tuned GPT..." },
+              { delay: 9800, text: "Analyzing content with fine-tuned GPT...." },
+              { delay: 12200, text: "Analyzing content with fine-tuned GPT....." },
+              { delay: 15000, text: "Generating final response from synthesized context..." }
+            ];
+
+            let active = true;
+            let timeouts = [];
+            phaseTimers.forEach(({ delay, text }) => {
+              const id = setTimeout(() => {
+                if (active) {
+                  responseElem.innerText = text;
+                  console.log("Updated loading message to:", text);
+                }
+              }, delay);
+              timeouts.push(id);
+            });
 
             try {
               const response = await fetch("/ask", {
@@ -102,41 +201,64 @@ def index():
                 headers: {
                   "Content-Type": "application/json"
                 },
-                body: JSON.stringify({
-                  user_input: userInput,
-                  role_answer: "{ROLE_ANSWER}" // Optional custom role (e.g., "Here is your role for this conversation: ...")
-                })
+                body: JSON.stringify({ user_input: userInput })
               });
-
-              console.log("Fetch response status:", response.status);
 
               if (response.ok) {
                 const data = await response.json();
-                console.log("Server data:", data);
-                document.getElementById("response").innerText = data.response;
+                active = false;
+                timeouts.forEach(timeoutId => clearTimeout(timeoutId));
+                responseElem.innerText = "Response ready:\\n\\n" + data.response;
               } else {
+                active = false;
+                timeouts.forEach(timeoutId => clearTimeout(timeoutId));
                 console.error("Fetch failed:", response.status, response.statusText);
-                document.getElementById("response").innerText = "Error: " + response.status;
+                responseElem.innerText = "Error: " + response.status;
               }
-
             } catch (err) {
+              active = false;
+              timeouts.forEach(timeoutId => clearTimeout(timeoutId));
               console.error("Error in askQuestion:", err);
-              document.getElementById("response").innerText = "Error: " + err.message;
+              responseElem.innerText = "Error: " + err.message;
             }
           }
+
+          window.addEventListener("load", function () {
+            const inputElem = document.getElementById("userInput");
+            inputElem.addEventListener("keydown", function (event) {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                askQuestion();
+              }
+            });
+          });
         </script>
       </head>
       <body>
         <h1>Ask GPT about Soleria</h1>
         <input id="userInput" type="text" placeholder="Enter your question" style="width: 80%;">
         <button onclick="askQuestion()">Ask</button>
+        <p style="font-size: 0.9em; color: #aaa; margin-top: 10px;">
+          You’re speaking to a narrator embedded in the world of <strong>Soleria</strong>. Try prompts that:<br>
+          <em>1. Analyze as literature: “What are the major themes of the story? How do the protagonists and larger story reflect those themes?”</em><br>
+          <em>2. Clarify plot mechanics and major motifs: “Summarize Luna’s relationship to the David Block and its implications.”</em><br>
+          <em>3. Explore the world: “What is the setting of the narrative/world? What major powers are involved in the political landscape?”</em><br>
+          <em>4. Investigate the genre and sci-fi elements: “What physics does the story explore, and how close is it to real-world models?”</em><br>
+          <em>5. Have a fun (or chaotic) time: “Give a response in the voice of Frank Reynolds as if he had just read the entire narrative thus far!”</em><br>
+          The system handles high-context narrative and speculative science. Be as specific as you like.
+        </p>
         <h2>Response:</h2>
         <pre id="response" style="white-space: pre-wrap; word-wrap: break-word;"></pre>
+        <footer style="margin-top: 50px; text-align: center; font-size: 0.9em; color: #888;">
+          Built by Dan Guilliams | <a href="https://github.com/dguilliams3" target="_blank" style="color: #888;">GitHub</a>
+        </footer>
       </body>
     </html>
-
-    """
-    return render_template_string(html, role_answer=ROLE_ANSWER)
+    """)
+    logging.info("\n=== START RAW HTML ===\n")
+    logging.info(repr(html))
+    logging.info("\n=== END RAW HTML ===\n")
+    return html
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)), debug=True)
