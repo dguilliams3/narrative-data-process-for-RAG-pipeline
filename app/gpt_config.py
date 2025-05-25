@@ -1,4 +1,5 @@
 import os
+from string import Template
 from dotenv import load_dotenv
 from pathlib import Path
 import logging
@@ -49,11 +50,29 @@ GPT_FINE_TUNED_MODEL = os.getenv("GPT_FINE_TUNED_MODEL", "ft:gpt-4o-2024-08-06:p
 GPT_FINE_TUNED_MAX_TOKENS = int(os.getenv("GPT_FINE_TUNED_MAX_TOKENS", 6000))
 GPT_FINE_TUNED_TEMPERATURE = float(os.getenv("GPT_FINE_TUNED_TEMPERATURE", 0.7))
 FINE_TUNED_PREVIOUS_CHUNKS = int(os.getenv("FINE_TUNED_PREVIOUS_CHUNKS", 5))
+
+# ---------------------- Prompt Templates ---------------------- #
+# DEFAULT_GPT_PROMPT_TEMPLATE
+try:
+    GPT_DEFAULT_PROMPT = Template(
+        os.getenv("DEFAULT_GPT_PROMPT_TEMPLATE", "")
+    )
+    if not GPT_DEFAULT_PROMPT.template:
+        raise ValueError("DEFAULT_GPT_PROMPT_TEMPLATE is empty or not assigned")
+except Exception as e:
+    # Fallback to hard-coded inline prompt template
+    GPT_DEFAULT_PROMPT = Template(
+        "[ROLE]\n${role}\n[END ROLE]\n"
+        "[CONVERSATION CONTEXT AND HISTORY]\n${context}\n"
+        "[END CONVERSATION CONTEXT AND HISTORY]\n"
+        "[USER PROMPT]\n${prompt}\n[END USER PROMPT]"
+    )
+
 FINE_TUNED_ROLE = os.getenv("FINE_TUNED_ROLE", """
 You are an expert continuity-aware summarizer for the fictional world of Soleria.
 You are helping the user add context for a later LLM call that includes details on the highly detailed, high-context narrative grounded conversation.
 Use the retrieved background text provided and the chat history to aid in understanding the best way to provide the information for the user's prompt. Give a comprehensive overview of the lore retireved, including character relationships, character details and actions, nation relationships, plot points, scientific details, and any other relevant details that would help the user understand the context of the conversation and enrich the context of the conversation for later queries.
-""")
+""").encode().decode("unicode_escape")
 
 # ---------------------- Role Definitions ---------------------- #
 ROLE_ANSWER = os.getenv("ROLE_ANSWER", """
@@ -71,13 +90,18 @@ This is written to be highly authentic to the characters, with an emphasis on lo
 This is intended for very intelligent audience, incorporating themes from a variety of disciplines, for a reading level of near master's degree or PhD.
 
 You always keep this in mind and give responses that are authentic, vivid, real to the characters and tone of the scene, and you avoid explicit exposition, instead keeping a warm and real dialogue and interaction setting among the characters.
-""")
+""").encode().decode("unicode_escape")
 
 GPT_SUMMARIZER_ROLE = os.getenv("GPT_SUMMARIZER_ROLE", """
 You are tasked with providing an extremely robust summary for the conversation history thus far to allow us to continue this chat.
-""")
+""").encode().decode("unicode_escape")
+GPT_FINE_TUNED_SUMMARIZER_ROLE = os.getenv("GPT_FINE_TUNED_SUMMARIZER_ROLE", """
+You are tasked with providing an valid summary of the retrieved results to reduce redudancy while keeping all relevant details for the RAG pipeline"
+""").encode().decode("unicode_escape")
+
 GPT_SUMMARIZER_TEMPERATURE = float(os.getenv("GPT_SUMMARIZER_TEMPERATURE", 0.5))
 GPT_SUMMARIZER_MAX_TOKENS = int(os.getenv("GPT_SUMMARIZER_MAX_TOKENS", 6000))
+GPT_SUMMARIZER_MODEL = os.getenv("GPT_SUMMARIZER_MODEL", "gpt-4o-mini")
 
 # Log non-secret configuration variables
 logging.info("Initial configuration variables: %s", {

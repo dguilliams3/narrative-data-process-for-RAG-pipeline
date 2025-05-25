@@ -1,5 +1,11 @@
 import tiktoken
-import logging
+from logging_utils import configure_logging, ensure_log_dir
+from gpt_config import *
+
+# Initialize logging
+ensure_log_dir(LOG_FILE_PATH)
+configure_logging(LOG_FILE_PATH)
+logger = logging.getLogger(__name__)
 
 class ChunkManager:
     """
@@ -34,7 +40,7 @@ class ChunkManager:
         # If single entry itself > max, we have to summarize it immediately:
         if entry_tokens > self.max_total_tokens:
             logging.info("Single entry too large — summarizing it directly...")
-            summary = self.summarizer.summarize_text(entry, max_tokens=self.max_total_tokens)
+            summary = self.summarizer.summarize_text(entry, max_tokens=self.max_total_tokens, model=GPT_MODEL)
             self.chunks.append(f"[SUMMARIZED]\n{summary}[END SUMMARY]")
             return
 
@@ -59,7 +65,14 @@ class ChunkManager:
             for idx, chunk in enumerate(self.chunks):
                 if not chunk.startswith("[SUMMARIZED]"):
                     logging.info("Context too large, summarizing chunk %d", idx)
-                    summary = self.summarizer.summarize_text(chunk, max_tokens=self.max_total_tokens)
+                    # Ensure we don't hit the max tokens limits if we're routing to gpt-4o-mini
+                    model = self.summarizer.select_model_by_token_length(chunk)
+                    summary = self.summarizer.summarize_text(
+                        text=chunk,
+                        max_tokens=self.max_total_tokens,
+                        role=GPT_SUMMARIZER_ROLE,
+                        model=model
+                    )
                     self.chunks[idx] = f"[SUMMARIZED]\n{summary}[END SUMMARY]"
                     break
             total = sum(self._count_tokens(c) for c in self.chunks)

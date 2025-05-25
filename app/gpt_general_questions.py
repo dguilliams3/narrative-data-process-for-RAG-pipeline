@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import time
 from flask import Flask, request, Response, jsonify, session, render_template_string
 from flask_swagger_ui import get_swaggerui_blueprint
 from functools import wraps
@@ -68,16 +69,24 @@ def ask():
     if user_input.lower() == "rag":
         session["rag_status"] = not session["rag_status"]
         return jsonify({"response": f"RAG now {'ON' if session['rag_status'] else 'OFF'}"})
-
+    
+    request_start = time.time()
     # maybe inject RAG
     if session.get("rag_status"):
         client.update_context_with_rag(user_input)
-
     # send to GPT
     resp = client.send_prompt(user_input)
-    text = client.extract_text(resp)
+    
+    # If the total response is called, extract the text, if not, just return the text.
+    # This can help with modularity latter if we begin introducing toggles or options.
+    if isinstance(resp, str):
+        text = resp
+    else:
+      text = client.extract_text(resp)
+    
     safe = sanitize_text(text)
     logger.info("Final answer: %s", safe)
+    logger.info("Request duration: %.2fs", time.time() - request_start)
     return jsonify({"response": safe})
 
 @app.route("/logs", methods=["GET"])
@@ -255,9 +264,6 @@ def index():
       </body>
     </html>
     """)
-    logging.info("\n=== START RAW HTML ===\n")
-    logging.info(repr(html))
-    logging.info("\n=== END RAW HTML ===\n")
     return html
 
 if __name__ == "__main__":
