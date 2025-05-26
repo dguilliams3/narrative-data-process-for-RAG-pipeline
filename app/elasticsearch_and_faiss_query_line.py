@@ -1,14 +1,15 @@
-import json
-import faiss
+import os, json
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from elasticsearch import Elasticsearch
-import torch
-import os
+from sentence_transformers import SentenceTransformer
 from transformers import pipeline
 from transformers import BertTokenizer, BertModel, BertForTokenClassification
 from logging_utils import *
 from keybert import KeyBERT
+import torch
+import faiss
+
+
 from gpt_config import *
 
 SENTANCE_TRANSFORMER_MODEL = 'all-MiniLM-L6-v2'
