@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import logging
 from logging_utils import configure_logging, ensure_log_dir
+from langchain.prompts import PromptTemplate
 
 # ---------------------- Environment Setup ---------------------- #
 current_dir = Path(__file__).resolve().parent
@@ -52,21 +53,47 @@ GPT_FINE_TUNED_TEMPERATURE = float(os.getenv("GPT_FINE_TUNED_TEMPERATURE", 0.7))
 FINE_TUNED_PREVIOUS_CHUNKS = int(os.getenv("FINE_TUNED_PREVIOUS_CHUNKS", 5))
 
 # ---------------------- Prompt Templates ---------------------- #
-# DEFAULT_GPT_PROMPT_TEMPLATE
-try:
-    GPT_DEFAULT_PROMPT = Template(
-        os.getenv("DEFAULT_GPT_PROMPT_TEMPLATE", "")
-    )
-    if not GPT_DEFAULT_PROMPT.template:
-        raise ValueError("DEFAULT_GPT_PROMPT_TEMPLATE is empty or not assigned")
-except Exception as e:
-    # Fallback to hard-coded inline prompt template
-    GPT_DEFAULT_PROMPT = Template(
-        "[ROLE]\n${role}\n[END ROLE]\n"
-        "[CONVERSATION CONTEXT AND HISTORY]\n${context}\n"
-        "[END CONVERSATION CONTEXT AND HISTORY]\n"
-        "[USER PROMPT]\n${prompt}\n[END USER PROMPT]"
-    )
+MAIN_PROMPT_TEMPLATE = PromptTemplate(
+    input_variables=["role", "context", "prompt"],
+    template="""[ROLE]
+{role}
+[END ROLE]
+[CONVERSATION CONTEXT AND HISTORY]
+{context}
+[END CONVERSATION CONTEXT AND HISTORY]
+[USER PROMPT]
+{prompt}
+[END USER PROMPT]"""
+)
+
+SUMMARIZER_PROMPT_TEMPLATE = PromptTemplate(
+    input_variables=["role", "text"],
+    template="""[ROLE]
+{role}
+[END ROLE]
+[TEXT-TO-SUMMARIZE]
+{text}
+[END TEXT-TO-SUMMARIZE]"""
+)
+
+FINE_TUNED_PROMPT_TEMPLATE = PromptTemplate(
+    input_variables=["role", "convo_history", "num_chunks", "raw", "query"],
+    template="""[ROLE]
+{role}
+[END ROLE]
+
+[CONVERSATION HISTORY (last {num_chunks} chunks)]
+{convo_history}
+[END CONVERSATION HISTORY]
+
+[RETRIEVED DOCUMENTS]
+{raw}
+[END RETRIEVED DOCUMENTS]
+
+[CURRENT PROMPT]
+{query}
+[END CURRENT PROMPT]"""
+)
 
 FINE_TUNED_ROLE = os.getenv("FINE_TUNED_ROLE", """
 You are an expert continuity-aware summarizer for the fictional world of Soleria.
