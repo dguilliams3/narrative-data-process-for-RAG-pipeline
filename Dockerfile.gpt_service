@@ -10,13 +10,7 @@ WORKDIR /app
 COPY app/ /app/
 
 # Upgrade pip and install dependencies
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir \
-       fastapi \
-       uvicorn[standard] \
-       openai \
-       pydantic
-
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements_gpt_service.txt
 # Expose the port your FastAPI app runs on
 EXPOSE 8001
 
