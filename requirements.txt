@@ -1,6 +1,7 @@
 # Core app
 flask
 flask_swagger_ui
+fastapi
 python-dotenv
 requests
 elasticsearch==8.11.1
@@ -8,6 +9,7 @@ elasticsearch==8.11.1
 # OpenAI & tokenizer support
 openai
 tiktoken
+langchain
 
 # Embedding and vector search
 faiss-cpu

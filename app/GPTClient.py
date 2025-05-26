@@ -7,11 +7,18 @@ import os
 import elasticsearch_and_faiss_query_line
 from gpt_config import *
 from chunk_manager import ChunkManager
+from langchain.prompts import PromptTemplate
 
 # Initialize logging
 ensure_log_dir(LOG_FILE_PATH)
 configure_logging(LOG_FILE_PATH)
 logger = logging.getLogger(__name__)
+
+class GPTServiceError(Exception):
+    """Custom exception for GPT service errors"""
+    def __init__(self, message, status_code=500):
+        super().__init__(message)
+        self.status_code = status_code
 
 class GPTClient:
     def __init__(
@@ -30,7 +37,7 @@ class GPTClient:
             raise ValueError("OPENAI_API_KEY not set")
         self.client = OpenAI(api_key=self.api_key)
         
-          # If you set GPT_SERVICE_URL, we’ll proxy all calls there instead of direct OpenAI.
+          # If you set GPT_SERVICE_URL, we'll proxy all calls there instead of direct OpenAI.
         self.gpt_service_url = gpt_service_url or os.getenv("GPT_SERVICE_URL")  
 
         self.model = model
@@ -46,6 +53,19 @@ class GPTClient:
             tokenizer_model=self.model,
             max_total_tokens=self.max_context_tokens,
             summarizer_client=self
+        )
+
+        self.prompt_template = PromptTemplate(
+            input_variables=["role", "context", "prompt"],
+            template="""[ROLE]
+{role}
+[END ROLE]
+[CONVERSATION CONTEXT AND HISTORY]
+{context}
+[END CONVERSATION CONTEXT AND HISTORY]
+[USER PROMPT]
+{prompt}
+[END USER PROMPT]"""
         )
 
     def count_tokens(self, text: str) -> int:
@@ -83,11 +103,14 @@ f"""
         context=self.chunker.get_context()
 
         # Step 1: assemble full prompt
-        full_prompt = GPT_DEFAULT_PROMPT.substitute(
-			role=role,
-			context=context,
-			user_prompt=user_prompt
+        full_prompt = self.prompt_template.format(
+            role=role,
+            context=context,
+            prompt=user_prompt
         )
+        
+        # Log the updated full prompt
+        logger.info("Full prompt: %s", full_prompt)
         
         # Step 2: add user prompt to chunker
         self.chunker.add_message("User", user_prompt)
@@ -236,22 +259,28 @@ f"""
                     try:
                         resp = requests.post(f"{self.gpt_service_url}/generate", json=payload, timeout=30)
                         resp.raise_for_status()
-                        return resp.json()["content"]
+                        response_json = resp.json()
+                        if "content" not in response_json:
+                            logger.error("Unexpected response format from GPT service: %s", response_json)
+                            raise GPTServiceError("Unexpected response format from GPT service")
+                        return response_json["content"]
                     except requests.exceptions.HTTPError as e:
-                        if resp.status_code == 502:  # Handle 502 Bad Gateway
+                        if resp.status_code == 502 and attempt < 2:  # Handle 502 Bad Gateway
                             logger.warning(f"Attempt {attempt + 1}: Received 502 Bad Gateway. Retrying...")
                             time.sleep(2 ** attempt)  # Exponential backoff
-                        else:
-                            logger.exception("HTTP error occurred")
-                            raise
+                            continue
+                        logger.exception("HTTP error occurred")
+                        raise GPTServiceError(f"HTTP error: {str(e)}", status_code=resp.status_code)
+                    except requests.exceptions.RequestException as e:
+                        logger.exception("Request error occurred")
+                        raise GPTServiceError(f"Request failed: {str(e)}")
                     except Exception as e:
-                        logger.exception("Unexpected error occurred during request")
-                    raise
-            except requests.exceptions.RequestException as e:
-                raise RuntimeError("Failed to get a valid response after 3 attempts")
-            
-            resp.raise_for_status()
-            return resp.json()["content"]
+                        logger.exception("Unexpected error occurred")
+                        raise GPTServiceError(f"Unexpected error: {str(e)}")
+                raise GPTServiceError("Max retries exceeded")
+            except Exception as e:
+                logger.exception("Failed to call GPT service")
+                raise GPTServiceError(f"GPT service call failed: {str(e)}")
 
         """
         If we aren't using a remote GPT service, call the OpenAI API directly and log the call.
