@@ -54,6 +54,18 @@ class ChunkManager:
         """
         return "\n".join(self.chunks)
 
+    def get_last_n_chunks(self, n: int) -> str:
+        """
+        Return only the last N chunks of conversation history.
+        If N is larger than available chunks, returns all chunks.
+        
+        :param n: Number of chunks to return from the end
+        :return: String of the last N chunks joined with newlines
+        """
+        if n >= len(self.chunks):
+            return self.get_context()
+        return "\n".join(self.chunks[-n:])
+
     def _trim_context_if_needed(self):
         """
         If total tokens across all chunks exceeds max_total_tokens,

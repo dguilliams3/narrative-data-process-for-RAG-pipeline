@@ -43,7 +43,7 @@ def requires_auth(f):
     return wrapper
 
 # instantiate client
-client = GPTClient()
+client = GPTClient(gpt_service_url=os.getenv("GPT_SERVICE_URL"))
 client.role = f"System Role:\n{ROLE_ANSWER}[END ROLE]\n"
 
 # RAG toggle default
@@ -51,6 +51,36 @@ DEFAULT_RAG = True
 
 @app.route("/ask", methods=["POST"])
 def ask():
+    """
+    Handle user questions and return GPT responses.
+
+    This endpoint processes user input, optionally performs RAG retrieval,
+    and returns a response from the GPT service.
+
+    Request:
+        JSON body with:
+        - user_input (str): The user's question or prompt
+
+    Response:
+        JSON object containing:
+        - response (str): The sanitized GPT response text
+        - duration (float): Total request duration in seconds
+        - model (str, optional): The model used for generation
+        - usage (dict, optional): Token usage statistics
+            - prompt_tokens (int): Tokens used in the prompt
+            - completion_tokens (int): Tokens used in the response
+            - total_tokens (int): Total tokens used
+        - finish_reason (str, optional): Why the model stopped generating
+        - duration (float, optional): How long the GPT service took
+
+    Special Commands:
+        - "reset": Clears the conversation context
+        - "context": Shows the current conversation context
+        - "rag": Toggles RAG functionality on/off
+
+    Returns:
+        JSON response with status code 200 for success, 400 for invalid input
+    """
     data = request.json or {}
     user_input = data.get("user_input", "").strip()
     if not user_input:
@@ -82,12 +112,22 @@ def ask():
     if isinstance(resp, str):
         text = resp
     else:
-      text = client.extract_text(resp)
+        text = client.extract_text(resp)
     
     safe = sanitize_text(text)
     logger.info("Final answer: %s", safe)
-    logger.info("Request duration: %.2fs", time.time() - request_start)
-    return jsonify({"response": safe})
+    duration = time.time() - request_start
+    logger.info("Request duration: %.2fs", duration)
+
+    # Include metadata in response if available
+    response_data = {
+        "response": safe,
+        "duration": duration
+    }
+    if hasattr(client, 'last_response_metadata'):
+        response_data.update(client.last_response_metadata)
+    
+    return jsonify(response_data)
 
 @app.route("/logs", methods=["GET"])
 @requires_auth
@@ -248,12 +288,12 @@ def index():
         <input id="userInput" type="text" placeholder="Enter your question" style="width: 80%;">
         <button onclick="askQuestion()">Ask</button>
         <p style="font-size: 0.9em; color: #aaa; margin-top: 10px;">
-          You’re speaking to a narrator embedded in the world of <strong>Soleria</strong>. Try prompts that:<br>
-          <em>1. Analyze as literature: “What are the major themes of the story? How do the protagonists and larger story reflect those themes?”</em><br>
-          <em>2. Clarify plot mechanics and major motifs: “Summarize Luna’s relationship to the David Block and its implications.”</em><br>
-          <em>3. Explore the world: “What is the setting of the narrative/world? What major powers are involved in the political landscape?”</em><br>
-          <em>4. Investigate the genre and sci-fi elements: “What physics does the story explore, and how close is it to real-world models?”</em><br>
-          <em>5. Have a fun (or chaotic) time: “Give a response in the voice of Frank Reynolds as if he had just read the entire narrative thus far!”</em><br>
+          You're speaking to a narrator embedded in the world of <strong>Soleria</strong>. Try prompts that:<br>
+          <em>1. Analyze as literature: "What are the major themes of the story? How do the protagonists and larger story reflect those themes?"</em><br>
+          <em>2. Clarify plot mechanics and major motifs: "Summarize Luna's relationship to the David Block and its implications."</em><br>
+          <em>3. Explore the world: "What is the setting of the narrative/world? What major powers are involved in the political landscape?"</em><br>
+          <em>4. Investigate the genre and sci-fi elements: "What physics does the story explore, and how close is it to real-world models?"</em><br>
+          <em>5. Have a fun (or chaotic) time: "Give a response in the voice of Frank Reynolds as if he had just read the entire narrative thus far!"</em><br>
           The system handles high-context narrative and speculative science. Be as specific as you like.
         </p>
         <h2>Response:</h2>
