@@ -50,6 +50,8 @@ services:
       GPT_SERVICE_URL: http://localhost:8001/generate
     ports:
       - "8001:8001"
+    networks:
+      - rag-net
 
 volumes:
   es_data:
