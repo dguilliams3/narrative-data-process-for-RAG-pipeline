@@ -5,11 +5,14 @@ fastapi
 python-dotenv
 requests
 elasticsearch==8.11.1
+aiohttp
 
 # OpenAI & tokenizer support
 openai
 tiktoken
 langchain
+langchain-openai
+langchain-community
 
 # Embedding and vector search
 faiss-cpu
@@ -25,3 +28,7 @@ scikit-learn==1.6.1
 scipy==1.15.2
 numpy==2.2.3
 keybert==0.7.0
+
+# Additional dependencies
+pydantic
+uvicorn[standard]

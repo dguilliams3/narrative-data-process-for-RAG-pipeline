@@ -14,7 +14,7 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 # Now copy the rest of the project
-COPY . .
+COPY app/ .
 
 # Expose port
 EXPOSE 5000
@@ -24,4 +24,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5000/health || exit 1
 
 # Run the app directly with system Python (no venv)
-CMD ["python", "app/gpt_general_questions.py"]
+CMD ["python", "gpt_general_questions.py"] 

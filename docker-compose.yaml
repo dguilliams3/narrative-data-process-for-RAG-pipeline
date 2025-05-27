@@ -30,9 +30,9 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./indexes:/app/indexes
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - rag_indexes:/app/indexes
+      - rag_data:/app/data
+      - rag_logs:/app/logs
     depends_on:
       - elasticsearch
     networks:
@@ -55,6 +55,9 @@ services:
 
 volumes:
   es_data:
+  rag_indexes:    # For FAISS indexes (faiss_index.bin, summaries_index.faiss, index_to_filename.json)
+  rag_data:       # For summaries.json
+  rag_logs:       # For context_log.log and app.log
 
 networks:
   rag-net:
