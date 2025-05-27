@@ -52,7 +52,7 @@
 1. **Install dependencies:**
    ```bash
    pip install -r app/requirements_gpt_service.txt
-   pip install -r app/requirements_elasticsearch.txt
+   pip install -r app/requirements.txt
    ```
 
 2. **Run services locally:**
