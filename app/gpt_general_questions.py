@@ -112,7 +112,7 @@ def ask():
     if isinstance(resp, str):
         text = resp
     else:
-        text = client.extract_text(resp)
+      text = client.extract_text(resp)
     
     safe = sanitize_text(text)
     logger.info("Final answer: %s", safe)

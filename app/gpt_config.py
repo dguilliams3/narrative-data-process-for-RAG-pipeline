@@ -1,19 +1,45 @@
-import os
-from string import Template
+import os, logging
 from dotenv import load_dotenv
 from pathlib import Path
-import logging
 from logging_utils import configure_logging, ensure_log_dir
 from langchain.prompts import PromptTemplate
 
 # ---------------------- Environment Setup ---------------------- #
-current_dir = Path(__file__).resolve().parent
-dotenv_path = current_dir.parent / '.env'
+def load_environment():
+    """
+    Load environment variables from .env file by searching up directory tree.
+    Environment variables are primarily loaded by docker-compose, this is a fallback for local development.
+    """
+    current_dir = Path(__file__).resolve().parent
+    
+    # Search for .env file up directory tree
+    env_path = current_dir
+    while env_path.parent != env_path:  # Until root directory
+        env_file = env_path / '.env'
+        if env_file.exists():
+            try:
+                load_dotenv(env_file)
+                return
+            except Exception as e:
+                logging.error(f"Failed to load .env file at {env_file}: {e}")
+        env_path = env_path.parent
+    
+    # Check root directory
+    env_file = env_path / '.env'
+    if env_file.exists():
+        try:
+            load_dotenv(env_file)
+        except Exception as e:
+            logging.error(f"Failed to load .env file at {env_file}: {e}")
 
-if not dotenv_path.is_file():
-    raise FileNotFoundError(f"Could not find .env file at expected location: {dotenv_path}")
-print(f"Pulling environment variables from {dotenv_path} ...")
-load_dotenv(dotenv_path)
+# Initialize environment
+try:
+    load_environment()
+except ImportError:
+    logging.error("python-dotenv not installed, environment variables must be set manually")
+except Exception as e:
+    logging.error(f"Unexpected error loading environment: {e}")
+
 
 # ---------------------- Logging Configuration ---------------------- #
 LOG_USERNAME = os.getenv("LOG_USERNAME", "admin")
@@ -93,7 +119,7 @@ FINE_TUNED_PROMPT_TEMPLATE = PromptTemplate(
 [CURRENT PROMPT]
 {query}
 [END CURRENT PROMPT]"""
-)
+    )
 
 FINE_TUNED_ROLE = os.getenv("FINE_TUNED_ROLE", """
 You are an expert continuity-aware summarizer for the fictional world of Soleria.

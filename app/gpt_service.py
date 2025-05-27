@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
-from app.gpt_config import SUMMARIZER_PROMPT_TEMPLATE
+from gpt_config import SUMMARIZER_PROMPT_TEMPLATE
 from logging_utils import configure_logging, ensure_log_dir
 import time
 
