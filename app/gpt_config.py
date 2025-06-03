@@ -102,24 +102,43 @@ SUMMARIZER_PROMPT_TEMPLATE = PromptTemplate(
 [END TEXT-TO-SUMMARIZE]"""
 )
 
-FINE_TUNED_PROMPT_TEMPLATE = PromptTemplate(
-    input_variables=["role", "convo_history", "num_chunks", "raw", "query"],
+INITIAL_DOC_PROCESSING_TEMPLATE = PromptTemplate(
+    input_variables=["role", "convo_history", "document", "query"],
     template="""[ROLE]
 {role}
 [END ROLE]
 
-[CONVERSATION HISTORY (last {num_chunks} chunks)]
+[CONVERSATION HISTORY]
 {convo_history}
 [END CONVERSATION HISTORY]
 
-[RETRIEVED DOCUMENTS]
-{raw}
-[END RETRIEVED DOCUMENTS]
+[DOCUMENT TO PROCESS]
+{document}
+[END DOCUMENT TO PROCESS]
 
-[CURRENT PROMPT]
+[USER QUERY]
 {query}
-[END CURRENT PROMPT]"""
-    )
+[END USER QUERY]"""
+)
+
+FINE_TUNED_RETRIEVED_DOCUMENTS_TEMPLATE = PromptTemplate(
+    input_variables=["role", "convo_history", "processed_docs", "query"],
+    template="""[ROLE]
+{role}
+[END ROLE]
+
+[CONVERSATION HISTORY]
+{convo_history}
+[END CONVERSATION HISTORY]
+
+[PROCESSED RETRIEVED DOCUMENTS]
+{processed_docs}
+[END PROCESSED RETRIEVED DOCUMENTS]
+
+[USER QUERY]
+{query}
+[END USER QUERY]"""
+)
 
 FINE_TUNED_ROLE = os.getenv("FINE_TUNED_ROLE", """
 You are an expert continuity-aware summarizer for the fictional world of Soleria.
@@ -148,12 +167,22 @@ You always keep this in mind and give responses that are authentic, vivid, real 
 GPT_SUMMARIZER_ROLE = os.getenv("GPT_SUMMARIZER_ROLE", """
 You are tasked with providing an extremely robust summary for the conversation history thus far to allow us to continue this chat.
 """).encode().decode("unicode_escape")
-GPT_FINE_TUNED_SUMMARIZER_ROLE = os.getenv("GPT_FINE_TUNED_SUMMARIZER_ROLE", """
-You are tasked with providing an valid summary of the retrieved results to reduce redudancy while keeping all relevant details for the RAG pipeline"
+
+GPT_INITIAL_PROCESSOR_ROLE = os.getenv("GPT_INITIAL_PROCESSOR_ROLE", """
+You are looking at lore information as part of a RAG pipeline. Your task is to provide a BRIEF, focused summary of the retrieved results, keeping only the most relevant details for the user's query. Remove redundancy and be concise while preserving key information. Focus only on information that directly relates to the user's query or provides essential context.
 """).encode().decode("unicode_escape")
 
-GPT_SUMMARIZER_TEMPERATURE = float(os.getenv("GPT_SUMMARIZER_TEMPERATURE", 0.5))
-GPT_SUMMARIZER_MAX_TOKENS = int(os.getenv("GPT_SUMMARIZER_MAX_TOKENS", 6000))
+GPT_FINE_TUNED_SUMMARIZER_ROLE = os.getenv("GPT_FINE_TUNED_SUMMARIZER_ROLE", """
+You are tasked with providing a comprehensive and coherent summary of the retrieved results, ensuring all relevant details are preserved while eliminating redundancy. Your role is to:
+1. Maintain all important narrative elements, character details, and plot points
+2. Remove any duplicate information while preserving context
+3. Organize the information in a logical and coherent manner
+4. Ensure the summary flows naturally and maintains narrative continuity
+5. Add any necessary context that helps connect different pieces of information
+""").encode().decode("unicode_escape")
+
+GPT_SUMMARIZER_TEMPERATURE = float(os.getenv("GPT_SUMMARIZER_TEMPERATURE", 0.3))
+GPT_SUMMARIZER_MAX_TOKENS = int(os.getenv("GPT_SUMMARIZER_MAX_TOKENS", 2000))
 GPT_SUMMARIZER_MODEL = os.getenv("GPT_SUMMARIZER_MODEL", "gpt-4o-mini")
 
 # Log non-secret configuration variables

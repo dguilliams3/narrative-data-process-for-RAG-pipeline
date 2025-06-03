@@ -11,6 +11,8 @@ from langchain.prompts import PromptTemplate
 import asyncio
 import aiohttp
 from typing import List, Tuple, Dict, Any
+from metrics_base import BaseMetricsProducer
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Initialize logging
 ensure_log_dir(LOG_FILE_PATH)
@@ -58,11 +60,18 @@ class GPTClient:
             summarizer_client=self  # We can still be the summarizer since we're using the same send_prompt
         )
 
+        # Initialize metrics producer
+        self.metrics_producer = BaseMetricsProducer(
+            service_name="gpt-client",
+            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+            topic="metrics"
+        )
+
     def count_tokens(self, text: str) -> int:
         enc = tiktoken.encoding_for_model(self.model)
         return len(enc.encode(text))
 
-    def send_prompt(self, user_prompt: str):
+    async def send_prompt(self, user_prompt: str):
         """
         Main user-facing call. Appends prompt to chunker,
         constructs full prompt with context, calls API, adds assistant reply
@@ -87,8 +96,8 @@ class GPTClient:
 
         # Step 1: assemble full prompt
         full_prompt = self.prompt_template.format(
-			role=role,
-			context=context,
+            role=role,
+            context=context,
             prompt=user_prompt
         )
         
@@ -108,9 +117,22 @@ class GPTClient:
         }
 
         try:
+            # Send request event
+            await self.metrics_producer.send_event(
+                event_type="request_started",
+                event_data={
+                    "model": self.model,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature
+                }
+            )
+
+            start_time = time.time()
             resp = requests.post(f"{self.gpt_service_url}/generate", json=payload, timeout=30)
             resp.raise_for_status()
             response_json = resp.json()
+            duration = time.time() - start_time
+
             if "content" not in response_json:
                 logger.error("Unexpected response format from GPT service: %s", response_json)
                 raise GPTServiceError("Unexpected response format from GPT service")
@@ -124,8 +146,49 @@ class GPTClient:
             }
             
             assistant_reply = response_json["content"]
+
+            # Send metrics
+            await self.metrics_producer.send_metric(
+                metric_name="request_duration",
+                metric_value=duration,
+                metadata={
+                    "model": self.model,
+                    "prompt_tokens": response_json.get("usage", {}).get("prompt_tokens", 0),
+                    "completion_tokens": response_json.get("usage", {}).get("completion_tokens", 0)
+                }
+            )
+
+            await self.metrics_producer.send_metric(
+                metric_name="total_tokens",
+                metric_value=response_json.get("usage", {}).get("total_tokens", 0),
+                metadata={
+                    "model": self.model,
+                    "prompt_tokens": response_json.get("usage", {}).get("prompt_tokens", 0),
+                    "completion_tokens": response_json.get("usage", {}).get("completion_tokens", 0)
+                }
+            )
+
+            # Send completion event
+            await self.metrics_producer.send_event(
+                event_type="request_completed",
+                event_data={
+                    "model": self.model,
+                    "duration": duration,
+                    "tokens": response_json.get("usage", {}).get("total_tokens", 0),
+                    "finish_reason": response_json.get("finish_reason")
+                }
+            )
+
         except Exception as e:
             logger.exception("Failed to call GPT service")
+            # Send error event
+            await self.metrics_producer.send_event(
+                event_type="request_failed",
+                event_data={
+                    "model": self.model,
+                    "error": str(e)
+                }
+            )
             raise GPTServiceError(f"GPT service call failed: {str(e)}")
         
         logging.info("User prompt: " + user_prompt)
@@ -138,7 +201,7 @@ class GPTClient:
 
         return assistant_reply
 
-    def summarize_text(
+    async def summarize_text(
         self,
         text: str,
         max_tokens: int = None,
@@ -180,15 +243,59 @@ class GPTClient:
         }
 
         try:
+            # Send summarization event
+            await self.metrics_producer.send_event(
+                event_type="summarization_started",
+                event_data={
+                    "model": model or self.model,
+                    "max_tokens": max_tokens or self.max_tokens,
+                    "temperature": temperature or self.temperature
+                }
+            )
+
+            start_time = time.time()
             resp = requests.post(f"{self.gpt_service_url}/generate", json=payload, timeout=30)
             resp.raise_for_status()
             response_json = resp.json()
+            duration = time.time() - start_time
+
             if "content" not in response_json:
                 logger.error("Unexpected response format from GPT service: %s", response_json)
                 raise GPTServiceError("Unexpected response format from GPT service")
+
+            # Send metrics
+            await self.metrics_producer.send_metric(
+                metric_name="summarization_duration",
+                metric_value=duration,
+                metadata={
+                    "model": model or self.model,
+                    "prompt_tokens": response_json.get("usage", {}).get("prompt_tokens", 0),
+                    "completion_tokens": response_json.get("usage", {}).get("completion_tokens", 0)
+                }
+            )
+
+            # Send completion event
+            await self.metrics_producer.send_event(
+                event_type="summarization_completed",
+                event_data={
+                    "model": model or self.model,
+                    "duration": duration,
+                    "tokens": response_json.get("usage", {}).get("total_tokens", 0),
+                    "finish_reason": response_json.get("finish_reason")
+                }
+            )
+
             return response_json["content"]
         except Exception as e:
             logger.exception("Failed to summarize text")
+            # Send error event
+            await self.metrics_producer.send_event(
+                event_type="summarization_failed",
+                event_data={
+                    "model": model or self.model,
+                    "error": str(e)
+                }
+            )
             raise GPTServiceError(f"Summarization failed: {str(e)}")
 
     def extract_text(self, response) -> str:
@@ -198,78 +305,50 @@ class GPTClient:
             logger.exception("Failed to extract response text")
             return ""
 
-    async def _process_chunks_parallel(
-            self,
-        docs: List[Dict[str, str]], 
-        query: str, 
-        convo_history: str,
-        timeout: int = 30
-    ) -> List[str]:
+    def process_chunks_parallel_sync(self, docs: List[Dict[str, Any]], query: str, convo_history: str) -> List[str]:
         """
-        Process all chunks in parallel using aiohttp.
-        
-        Args:
-            docs: List of documents to process
-            query: The user's query
-            convo_history: Conversation history context
-            timeout: Timeout in seconds for each request
-            
-        Returns:
-            List of summaries from the fine-tuned model
+        Synchronously summarize retrieved documents in parallel threads.
+        Uses the configured summarizer model and token limits.
         """
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-            tasks = []
-            for doc in docs:
-                prompt = FINE_TUNED_PROMPT_TEMPLATE.format(
-                    role=FINE_TUNED_ROLE,
-                    convo_history=convo_history,
-                    num_chunks=FINE_TUNED_PREVIOUS_CHUNKS,
-                    raw=doc['summary'],
-                    query=query
-                )
-                
-                payload = {
-                    "prompt": prompt,
-                    "api_key": self.api_key,
-                    "model": GPT_FINE_TUNED_MODEL,
-                    "max_tokens": GPT_FINE_TUNED_MAX_TOKENS,
-                    "temperature": GPT_FINE_TUNED_TEMPERATURE
-                }
-                
-                tasks.append(session.post(f"{self.gpt_service_url}/generate", json=payload))
-            
-            # Wait for all requests to complete
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process responses
-            total_summaries = []
-            for i, resp in enumerate(responses):
+        def summarize_doc(doc):
+            prompt = INITIAL_DOC_PROCESSING_TEMPLATE.format(
+                role=GPT_INITIAL_PROCESSOR_ROLE,
+                convo_history=convo_history,
+                document=doc["summary"],
+                query=query
+            )
+            payload = {
+                "prompt": prompt,
+                "api_key": self.api_key,
+                "model": GPT_SUMMARIZER_MODEL,
+                "max_tokens": GPT_SUMMARIZER_MAX_TOKENS,
+                "temperature": GPT_SUMMARIZER_TEMPERATURE
+            }
+            resp = requests.post(
+                f"{self.gpt_service_url}/generate",
+                json=payload,
+                timeout=30
+            )
+            resp.raise_for_status()
+            return resp.json().get("content", "")
+
+        # Use as many workers as there are docs (config-driven count)
+        max_workers = min(len(docs), len(docs))
+        summaries = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(summarize_doc, d) for d in docs]
+            for future in as_completed(futures):
                 try:
-                    if isinstance(resp, Exception):
-                        logger.error(f"Request failed for doc {i}: {str(resp)}")
-                        continue
-                        
-                    if resp.status != 200:
-                        logger.error(f"Request failed with status {resp.status} for doc {i}")
-                        continue
-                        
-                    response_json = await resp.json()
-                    if "content" in response_json:
-                        total_summaries.append(response_json["content"])
-                    else:
-                        logger.error(f"Unexpected response format for doc {i}: {response_json}")
+                    summaries.append(future.result())
                 except Exception as e:
-                    logger.exception(f"Failed to process response for doc {i}")
-                    continue
-            
-            return total_summaries
+                    logger.error("Document summarization failed: %s", e)
+        return summaries
 
     def update_context_with_rag(self, query: str) -> Tuple[str, List[str]]:
         """
         1) FAISS -> Elastic retrieval
-        2) Combine raw docs
-        3) Summarize via fine‑tuned GPT (in parallel)
+        2) Process individual docs with GPT-4o-mini (in parallel)
+        3) Combine and deduplicate with fine-tuned model
         4) Inject into chunker
 
         Args:
@@ -282,10 +361,10 @@ class GPTClient:
         """
         logger.info("Updating context with RAG")
         try:
-        # 1) FAISS
-        paths = elasticsearch_and_faiss_query_line.query_faiss(query)
-        # 2) ES
-        docs = elasticsearch_and_faiss_query_line.retrieve_documents_from_elasticsearch(paths, query)
+            # 1) FAISS
+            paths = elasticsearch_and_faiss_query_line.query_faiss(query)
+            # 2) ES
+            docs = elasticsearch_and_faiss_query_line.retrieve_documents_from_elasticsearch(paths, query)
             
             if not docs:
                 logger.warning("No documents retrieved from Elasticsearch")
@@ -294,39 +373,30 @@ class GPTClient:
             # Get last N chunks of conversation history for context
             convo_history = self.chunker.get_last_n_chunks(FINE_TUNED_PREVIOUS_CHUNKS)
             
-            # Create event loop for async processing
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                # Process all chunks in parallel
-                total_summaries = loop.run_until_complete(
-                    self._process_chunks_parallel(docs, query, convo_history)
-                )
-            finally:
-                loop.close()
+            # Summarize retrieved documents in parallel synchronously
+            total_summaries = self.process_chunks_parallel_sync(docs, query, convo_history)
             
             if not total_summaries:
-                logger.warning("No summaries generated from fine-tuned model")
+                logger.warning("No summaries generated from GPT-4o-mini")
                 return "", []
             
             # Combine summaries
-        combined_summaries = "\n\n".join(total_summaries)
-        header = "\n\n" + "-"*20 + "[RAG LORE]" + "-"*20 + "\n"
-        footer = "\n" + "-"*20 + "[END RAG LORE]" + "-"*20 + "\n\n"
-
-            # Final deduplication step with GPT-4o-mini
-            prompt = SUMMARIZER_PROMPT_TEMPLATE.format(
-                role=GPT_FINE_TUNED_SUMMARIZER_ROLE,
-                text=combined_summaries
+            combined_summaries = "\n\n".join(total_summaries)
+            
+            # Final deduplication step with fine-tuned model
+            fine_tuned_prompt = FINE_TUNED_RETRIEVED_DOCUMENTS_TEMPLATE.format(
+                role=FINE_TUNED_ROLE,
+                convo_history=convo_history,
+                processed_docs=combined_summaries,
+                query=query
             )
             
             payload = {
-                "prompt": prompt,
+                "prompt": fine_tuned_prompt,
                 "api_key": self.api_key,
-                "model": GPT_SUMMARIZER_MODEL,
-                "max_tokens": GPT_SUMMARIZER_MAX_TOKENS,
-                "temperature": GPT_SUMMARIZER_TEMPERATURE
+                "model": GPT_FINE_TUNED_MODEL,
+                "max_tokens": GPT_FINE_TUNED_MAX_TOKENS,
+                "temperature": GPT_FINE_TUNED_TEMPERATURE
             }
             
             try:
@@ -337,11 +407,13 @@ class GPTClient:
                     raise GPTServiceError("Unexpected response format from GPT service")
                 final_RAG_summary = response_json["content"]
             except Exception as e:
-                logger.exception("Failed to summarize combined summaries")
-                raise GPTServiceError(f"RAG summarization failed: {str(e)}")
+                logger.exception("Failed to process with fine-tuned model")
+                raise GPTServiceError(f"Fine-tuned processing failed: {str(e)}")
             
-            # Add to chunker
-        self.chunker.add_message("RAG_LORE", header + final_RAG_summary + footer)
+            # Add to chunker with formatting
+            header = "\n\n" + "-"*20 + "[RAG LORE]" + "-"*20 + "\n"
+            footer = "\n" + "-"*20 + "[END RAG LORE]" + "-"*20 + "\n\n"
+            self.chunker.add_message("RAG_LORE", header + final_RAG_summary + footer)
 
             return final_RAG_summary, [doc['filename'] for doc in docs]
             
@@ -359,3 +431,19 @@ class GPTClient:
         token_count = self.count_tokens(prompt)
         logging.info(f"Prompt token count: {token_count}")
         return "gpt-4o-mini" if token_count <= max_safe_tokens_mini else "gpt-4o"
+
+    async def close(self):
+        """Clean up resources"""
+        await self.metrics_producer.close()
+
+    def __del__(self):
+        """Ensure cleanup on object destruction"""
+        try:
+            # Run cleanup in event loop if it exists
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self.close())
+            else:
+                loop.run_until_complete(self.close())
+        except:
+            pass

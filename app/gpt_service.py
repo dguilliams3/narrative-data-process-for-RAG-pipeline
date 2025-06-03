@@ -1,12 +1,15 @@
 # gpt_service.py
 import os
 import logging
+import time
+import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
-from gpt_config import SUMMARIZER_PROMPT_TEMPLATE
 from logging_utils import configure_logging, ensure_log_dir
-import time
+from metrics_base import BaseMetricsProducer
+import asyncio
+from contextlib import asynccontextmanager
 
 # Setup logging
 LOG_FILE_PATH = "logs/gpt_service.log"
@@ -14,10 +17,25 @@ ensure_log_dir(LOG_FILE_PATH)
 configure_logging(LOG_FILE_PATH)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup code
+    metrics_producer._flush_task = asyncio.create_task(metrics_producer._periodic_flush())
+    yield
+    # Shutdown code
+    await metrics_producer.close()
+
+app = FastAPI(lifespan=lifespan)
 tokens_used = 0
 request_count = 0
 start_time = time.time()
+
+# Initialize metrics producer
+metrics_producer = BaseMetricsProducer(
+    service_name="gpt-service",
+    bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+    topic="metrics"
+)
 
 class GPTRequest(BaseModel):
     prompt: str
@@ -38,7 +56,28 @@ class GPTResponse(BaseModel):
     finish_reason: str
     duration: float
 
-def _send_to_openai(
+async def send_metric(metric_name: str, metric_value: float, metadata: dict = None):
+    """Send a metric to the metrics service asynchronously"""
+    try:
+        await metrics_producer.send_metric(
+            metric_name=metric_name,
+            metric_value=metric_value,
+            metadata=metadata
+        )
+    except Exception as e:
+        logger.error(f"Failed to send metric: {str(e)}")
+
+async def send_event(event_type: str, event_data: dict):
+    """Send an event to the metrics service asynchronously"""
+    try:
+        await metrics_producer.send_event(
+            event_type=event_type,
+            event_data=event_data
+        )
+    except Exception as e:
+        logger.error(f"Failed to send event: {str(e)}")
+
+async def _send_to_openai(
     prompt: str,
     api_key: str,
     model: str,
@@ -79,6 +118,27 @@ def _send_to_openai(
             "finish_reason": resp.choices[0].finish_reason
         }
 
+        # Send metrics asynchronously
+        await send_metric("request_duration", duration, {
+            "model": model,
+            "prompt_tokens": resp.usage.prompt_tokens,
+            "completion_tokens": resp.usage.completion_tokens
+        })
+        
+        await send_metric("total_tokens", resp.usage.total_tokens, {
+            "model": model,
+            "prompt_tokens": resp.usage.prompt_tokens,
+            "completion_tokens": resp.usage.completion_tokens
+        })
+        
+        # Send event asynchronously
+        await send_event("gpt_request_completed", {
+            "model": model,
+            "duration": duration,
+            "tokens": resp.usage.total_tokens,
+            "finish_reason": resp.choices[0].finish_reason
+        })
+
         logger.info(
             "[OPENAI CALL DURATION] %.2fs",
             duration
@@ -92,6 +152,11 @@ def _send_to_openai(
 
     except Exception as e:
         logger.exception("OpenAI API call failed")
+        # Send error event asynchronously
+        await send_event("gpt_request_failed", {
+            "model": model,
+            "error": str(e)
+        })
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate", response_model=GPTResponse)
@@ -121,9 +186,16 @@ async def generate(req: GPTRequest):
     """
     global request_count
     request_count += 1
+    
+    # Send request event asynchronously
+    await send_event("gpt_request_started", {
+        "model": req.model,
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature
+    })
 
     try:
-        content, metadata = _send_to_openai(
+        content, metadata = await _send_to_openai(
             prompt=req.prompt,
             api_key=req.api_key,
             model=req.model,
@@ -142,7 +214,7 @@ async def generate(req: GPTRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
-def health():
+async def health():
     """
     Check the health status of the GPT service.
 
@@ -158,11 +230,11 @@ def health():
     return {"status": "ok", "uptime": uptime, "request_count": request_count}
 
 @app.get("/metrics")
-def metrics():
+async def metrics():
     """
     Provide metrics about the GPT service.
 
     This endpoint returns a JSON object with the total tokens used and the
     average tokens per request.
     """
-    return {"total_tokens": tokens_used, "avg_tokens_per_request": tokens_used / request_count}
+    return {"total_tokens": tokens_used, "avg_tokens_per_request": tokens_used / request_count if request_count > 0 else 0}

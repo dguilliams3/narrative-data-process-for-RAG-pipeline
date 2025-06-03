@@ -2,9 +2,10 @@ import os
 import sys
 import logging
 import time
-from flask import Flask, request, Response, jsonify, session, render_template_string
-from flask_swagger_ui import get_swaggerui_blueprint
+from flask import Flask, request, Response, jsonify, session, render_template_string, jsonify
 from functools import wraps
+import asyncio
+import threading
 
 # ensure current dir is on path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +46,15 @@ def requires_auth(f):
 # instantiate client
 client = GPTClient(gpt_service_url=os.getenv("GPT_SERVICE_URL"))
 client.role = f"System Role:\n{ROLE_ANSWER}[END ROLE]\n"
+
+# Start periodic metrics flush thread immediately after client instantiation
+def _start_rag_metrics_flush_loop():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(client.metrics_producer._periodic_flush())
+    loop.run_forever()
+
+threading.Thread(target=_start_rag_metrics_flush_loop, daemon=True).start()
 
 # RAG toggle default
 DEFAULT_RAG = True
@@ -105,7 +115,7 @@ def ask():
     if session.get("rag_status"):
         client.update_context_with_rag(user_input)
     # send to GPT
-    resp = client.send_prompt(user_input)
+    resp = asyncio.run(client.send_prompt(user_input))
     
     # If the total response is called, extract the text, if not, just return the text.
     # This can help with modularity latter if we begin introducing toggles or options.
@@ -138,8 +148,6 @@ def view_logs():
 @app.route("/health")
 def health():
     return "OK", 200
-
-from flask import jsonify
 
 @app.route("/metrics", methods=["GET"])
 def metrics():
