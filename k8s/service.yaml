@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt-service
+spec:
+  selector:
+    app: gpt-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8001
+  type: NodePort  # This makes the service accessible from outside the cluster 
