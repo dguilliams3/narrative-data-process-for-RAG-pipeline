@@ -15,6 +15,8 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 # Now copy the rest of the project
 COPY app/ .
+COPY populate_elasticsearch.py . 
+COPY summaries.json .            
 
 # Expose port
 EXPOSE 5000
