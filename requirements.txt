@@ -17,11 +17,7 @@ langchain-community
 # Embedding and vector search
 faiss-cpu
 sentence-transformers==3.4.1
-transformers==4.49.0
 tokenizers==0.21.0
-
-# Torch backend (note: 2.6.0 is latest as of now)
-torch==2.6.0
 
 # ML utilities
 scikit-learn==1.6.1
@@ -32,3 +28,6 @@ keybert==0.7.0
 # Additional dependencies
 pydantic
 uvicorn[standard]
+
+# Kafka dependencies
+confluent-kafka>=2.3.0
