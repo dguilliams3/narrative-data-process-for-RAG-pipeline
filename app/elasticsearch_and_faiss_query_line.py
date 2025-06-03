@@ -2,11 +2,11 @@ import os, json
 import numpy as np
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer
-from transformers import pipeline
-from transformers import BertTokenizer, BertModel, BertForTokenClassification
+# from transformers import pipeline
+# from transformers import BertTokenizer, BertModel, BertForTokenClassification
 from logging_utils import *
 from keybert import KeyBERT
-import torch
+# import torch
 import faiss
 
 
@@ -24,18 +24,23 @@ SENTANCE_TRANSFORMER_MODEL = 'all-MiniLM-L6-v2'
 # Initialize KeyBERT with the specified device
 kw_model = KeyBERT(model='distilbert-base-nli-mean-tokens')
 
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-bert_model = BertModel.from_pretrained('bert-base-uncased')
+# BERT/transformers-based keyword extraction and QA are disabled for now:
+# tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+# bert_model = BertModel.from_pretrained('bert-base-uncased')
+# device = 0 if torch.cuda.is_available() else "cpu"
+# logging.info(f"Device: {device}")
+device = "cpu"
+model = SentenceTransformer(SENTANCE_TRANSFORMER_MODEL)
 
 # Elasticsearch setup - replace with your actual endpoint
 es = Elasticsearch(ELASTICSEARCH_HOST, basic_auth=("elastic", os.getenv("ES_PASSWORD")), verify_certs=False)
 
 # Check if GPU is available for encoding queries
-device = 0 if torch.cuda.is_available() else "cpu"
+# device = 0 if torch.cuda.is_available() else "cpu"
 logging.info(f"Device: {device}")
 
 # Load the SentenceTransformer model for encoding queries
-model = SentenceTransformer(SENTANCE_TRANSFORMER_MODEL, device=device)
+# model = SentenceTransformer(SENTANCE_TRANSFORMER_MODEL, device=device)
 
 def find_file(filename):
     """Search for FAISS index file in the project directory and its subdirectories."""
@@ -89,7 +94,8 @@ def query_faiss(query, top_k=FAISS_TOP_K):
 
 def retrieve_documents_from_elasticsearch(faiss_docs, prompt):
     # Try to extract keywords from the prompt using KeyBERT
-    keywords = extract_keywords_with_keybert(prompt)
+    # keywords = extract_keywords_with_keybert(prompt)
+    keywords = []
     if not keywords:
         # Fallback: use filenames from FAISS results
         filenames = [os.path.basename(doc_path) for doc_path in faiss_docs]
@@ -174,53 +180,35 @@ def retrieve_documents_from_elasticsearch(faiss_docs, prompt):
 # 		logging.info("Error retrieving documents from Elasticsearch: %s", e)
 # 		return []
 
-def test_qa_pipeline(): # Run a test query
-	# Load the QA pipeline on the selected device
-	qa_pipeline = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad", device=device)
-	query = "How does Dalakash influence Soleria's governance?"
-
-	# Retrieve documents based on the test query
-	faiss_results = query_faiss(query)
-	es_results = retrieve_documents_from_elasticsearch(faiss_results)
-
-	# Print the results for inspection
-	logging.info("\nRetrieved Documents and Summaries:")
-	for filename, summary in es_results: 
-		logging.info(f"Filename: {filename}")
-		logging.info(f"Summary: {summary}\n{'-'*60}\n")
-
-	logging.info(f"\n{'-'*100}\nAttempts to answer question:\n{query}")
-	# Perform QA on retrieved documents
-	for i, (filename, summary) in enumerate(es_results):
-		logging.info(f"\n{'-'*40}\nResult {i + 1}: {filename}")
-		doc_content = summary or "Summary not available"
-		answer = qa_pipeline(question=query, context=doc_content)
-		# Print the answer
-		logging.info(f"Answer: {answer['answer']} (Confidence: {answer['score']:.2f})")
-
-		if answer['score'] < 0.5:
-			logging.info("Low confidence in answer; additional context may be required.")
-		
-		logging.info(f"\n{'-'*40}")
-
-def extract_keywords_with_bert(text, top_n=5):
-	logging.info(f"\n\n{'-'*40}EXTRACTING KEYWORDS WITH BERT...\n\n")
-	# Encode the input text
-	inputs = tokenizer(text, return_tensors="pt", add_special_tokens=True)
-	outputs = bert_model(**inputs)
-
-	# Get the last hidden states (token embeddings)
-	last_hidden_states = outputs.last_hidden_state.squeeze(0)  # Remove batch dimension
-
-	# Optionally use softmax to identify the most important tokens
-	token_importances = torch.softmax(last_hidden_states.norm(dim=1), dim=0)
-	
-	# Get the top n important tokens' indices
-	top_n_indices = torch.topk(token_importances, top_n).indices
-	
-	keywords = [tokenizer.decode([inputs.input_ids[0][idx]]) for idx in top_n_indices]
-	logging.info(f"\n\nKEYWORDS FROM BERT:\n{keywords}\n\n{'-'*40}")
-	return keywords
+## BERT/transformers-based QA pipeline is disabled for now:
+# def test_qa_pipeline(): # Run a test query
+#     # Load the QA pipeline on the selected device
+#     qa_pipeline = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad", device=device)
+#     query = "How does Dalakash influence Soleria's governance?"
+#
+#     # Retrieve documents based on the test query
+#     faiss_results = query_faiss(query)
+#     es_results = retrieve_documents_from_elasticsearch(faiss_results)
+#
+#     # Print the results for inspection
+#     logging.info("\nRetrieved Documents and Summaries:")
+#     for filename, summary in es_results: 
+#         logging.info(f"Filename: {filename}")
+#         logging.info(f"Summary: {summary}\n{'-'*60}\n")
+#
+#     logging.info(f"\n{'-'*100}\nAttempts to answer question:\n{query}")
+#     # Perform QA on retrieved documents
+#     for i, (filename, summary) in enumerate(es_results):
+#         logging.info(f"\n{'-'*40}\nResult {i + 1}: {filename}")
+#         doc_content = summary or "Summary not available"
+#         answer = qa_pipeline(question=query, context=doc_content)
+#         # Print the answer
+#         logging.info(f"Answer: {answer['answer']} (Confidence: {answer['score']:.2f})")
+#
+#         if answer['score'] < 0.5:
+#             logging.info("Low confidence in answer; additional context may be required.")
+#         
+#         logging.info(f"\n{'-'*40}")
 
 def extract_keywords_with_keybert(text, top_n=5):
 	logging.info(f"\n\n{'-'*40}\nEXTRACTING KEYWORDS WITH KEYBERT...\nText:\n{text}\n\n")
