@@ -11,6 +11,7 @@ placeholder*.json
 
 # 🐍 Virtual env (local only)
 venv/
+.venv/
 
 # 💾 Elasticsearch disk state (regenerated on container start)
 elasticsearch_snapshots/
@@ -22,3 +23,5 @@ elasticsearch_snapshots/
 # Useful for GitHub or rebuilding ES indexes later, but not needed for deployment
 questions-answers.json
 images/
+
+docs/

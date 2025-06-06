@@ -1,25 +1,33 @@
 # Core app
 flask
 flask_swagger_ui
+fastapi
 python-dotenv
 requests
 elasticsearch==8.11.1
+aiohttp
 
 # OpenAI & tokenizer support
 openai
 tiktoken
+langchain
+langchain-openai
+langchain-community
 
 # Embedding and vector search
 faiss-cpu
 sentence-transformers==3.4.1
-transformers==4.49.0
 tokenizers==0.21.0
-
-# Torch backend (note: 2.6.0 is latest as of now)
-torch==2.6.0
 
 # ML utilities
 scikit-learn==1.6.1
 scipy==1.15.2
 numpy==2.2.3
 keybert==0.7.0
+
+# Additional dependencies
+pydantic
+uvicorn[standard]
+
+# Kafka dependencies
+confluent-kafka>=2.3.0

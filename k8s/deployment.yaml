@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt-service
+  labels:
+    app: gpt-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpt-service
+  template:
+    metadata:
+      labels:
+        app: gpt-service
+    spec:
+      containers:
+      - name: gpt-service
+        image: gpt-service:latest
+        imagePullPolicy: Never  # This tells Kubernetes to use local image
+        ports:
+        - containerPort: 8001
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health  # You'll need to add this endpoint to your FastAPI app
+            port: 8001
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 15
+          periodSeconds: 20 

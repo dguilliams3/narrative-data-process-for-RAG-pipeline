@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+openai
+pydantic
+python-dotenv
+requests
+langchain
+langchain-openai
+langchain-community
+confluent-kafka>=2.3.0

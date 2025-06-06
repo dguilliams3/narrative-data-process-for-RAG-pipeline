@@ -1,7 +1,7 @@
 .env
 venv/
+.venv/
 __pycache__/
-.git/
 *.pyc
 elasticsearch_snapshots/
 flask_session/
