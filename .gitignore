@@ -22,3 +22,7 @@ index_to_filename.json
 # Contains the actual contents that populate the ES instances.  A few were left in the placeholder version to showcase.
 summaries.json
 questions-answers.json
+
+# 
+.cursorignore
+.rsync-exclude
